@@ -203,7 +203,7 @@ export function CommissionsView({ user }: { user: { id: string; role: string; na
                         {c.appointment.completedAt ? `${fmtDateMedium(new Date(c.appointment.completedAt))} ${timeHMInBogota(new Date(c.appointment.completedAt))}` : "—"}
                       </TableCell>
                       <TableCell className="font-medium">{c.appointment.code}</TableCell>
-                      <TableCell className="text-sm text-ink-soft">{c.barber.name}</TableCell>
+                      <TableCell className="text-sm text-ink-soft">{c.barber?.name ?? "—"}</TableCell>
                       <TableCell className="text-sm">{c.appointment.service.name}</TableCell>
                       <TableCell className="text-right tabular-nums">{cop(c.baseAmount)}</TableCell>
                       <TableCell className="text-sm text-ink-soft">
@@ -525,7 +525,7 @@ export function MyCommissionsView({ user }: { user: { id: string; name: string; 
             <div key={c.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-ink/10 bg-ivory px-4 py-3 text-sm">
               <Percent className="h-4 w-4 text-brass-dark" />
               <span className="font-medium">{c.appointment.code}</span>
-              <span className="text-ink-soft">{c.appointment.service.name} · {c.barber.name}</span>
+              <span className="text-ink-soft">{c.appointment.service.name} · {c.barber?.name ?? ""}</span>
               <Chip>{c.configured ? (c.commissionType === "PERCENT" ? `${pct(c.percent)}` : c.commissionType === "FIXED" ? "fijo" : "mixto") : "sin regla"}</Chip>
               <span className="ml-auto font-bold tabular-nums">{cop(c.calculatedAmount)}</span>
               <span className={cn("rounded-full border px-2 py-0.5 text-[11px]",

@@ -1,0 +1,108 @@
+
+════════ FASE A · Escenarios H.1–H.9 + H.10 sin WhatsApp configurado ════════
+  Servicios: Corte Clásico (45 min) · Corte + Barba (60 min)
+  Fecha de pruebas (Bogotá): 2026-11-03
+
+[H.1] Una reserva pública aparece en el calendario
+  [PASS] reserva pública creada (HTTP 201) — código MB-JD3PYX
+  [PASS] visible en el calendario interno (GET /api/appointments?date=…)
+  [PASS] origen registrado como PUBLIC
+  [PASS] estado inicial RESERVED
+  [PASS] la agenda del barbero consulta el mismo día sin error
+
+[H.2] Una cita manual respeta la disponibilidad
+  [PASS] domingo (sin ventanas del barbero) rechazada con 400 — La hora no está dentro de la disponibilidad del barbero
+  [PASS] 13:30 (hueco entre ventanas 10–13 y 14–19) rechazada con 400 — La hora no está dentro de la disponibilidad del barbero
+  [PASS] fecha pasada rechazada con 400 — No se pueden crear citas en días pasados
+  [PASS] cita manual válida (dentro de ventana) creada con 201 — código MB-8J5JSZ
+
+[H.3] El mismo horario no puede reservarse dos veces
+  [PASS] reserva pública solapada con cita manual → 409 — El horario se cruza con otra cita del barbero
+  [PASS] cita manual solapada → 409 — El horario se cruza con otra cita del barbero
+  [PASS] solapamiento parcial sobre la reserva pública (mismo barbero) → 409 — El horario se cruza con otra cita del barbero
+
+[H.4] Servicio completado genera la información para pago y comisión
+  [PASS] cita de prueba creada (manual, Santiago) — código MB-ZKZE56
+  [PASS] no se puede saltar el flujo (RESERVED→COMPLETED rechazado) — Use action=complete para completar la cita
+  [PASS] completada con descuento 3000 (CONFIRMED→IN_ATTENTION→COMPLETED)
+  [PASS] comisión generada al completar (status PENDING_PAYMENT)
+  [PASS] base de comisión = venta neta (47000) — base 47000
+  [PASS] snapshot histórico guarda regla, precio y descuento del momento
+  [PASS] información financiera lista para registrar el pago (neto y pendiente) — pendiente 47000
+
+[H.5] Un pago no se contabiliza dos veces
+  [PASS] primer pago registrado (201) — id cmvu08448001qngg07d9kplf7
+  [PASS] reintento con el mismo clientRequestId no duplica (mismo id de pago)
+  [PASS] pago que excede el valor neto rechazado con 400 — El pago excede el valor neto de la cita (neto 47000, ya registrado 47000)
+  [PASS] la cita queda con exactamente un pago — pagos: 1
+
+[H.6] El propietario ve el consolidado del negocio
+  [PASS] resumen con ventas brutas/descuentos/netas
+  [PASS] caja distingue cobrado, gastos y pagos a barberos
+  [PASS] comisiones separadas en generadas/pagadas/pendientes
+  [PASS] resultado operativo = netas − comisiones − gastos (una sola vez)
+  [PASS] desglose por barbero con «del negocio» = netas − comisiones
+  [PASS] movimientos de caja incluyen el pago del período
+  [PASS] panel del propietario carga consolidado día y mes
+
+[H.7] Un barbero no puede acceder a información financiera ajena sin permiso
+  [PASS] sin permiso: pedir comisiones de otro barbero devuelve solo las propias (0 ajenas) — recibidas: 0
+  [PASS] sin permiso: pagos de otros barberos no visibles
+  [PASS] reportes del negocio → 403
+  [PASS] cambiar reglas de comisión → 403
+  [PASS] registrar gastos → 403
+  [PASS] editar disponibilidad de otro → 403
+  [PASS] con permiso excepcional finance.viewOthers: sí ve comisiones ajenas
+  [PASS] permiso revocado: vuelve a no verlas
+
+[H.8] Una liquidación refleja las comisiones y los pagos correspondientes
+  [PASS] hay comisiones pendientes para liquidar (de H.4) — pendientes: 1
+  [PASS] borrador creado con totales calculados por el servidor — total 18800 (esperado 18800)
+  [PASS] el barbero NO puede aprobar su propia liquidación (403) — HTTP 403 No puedes aprobar esta liquidación
+  [PASS] aprobada por el propietario
+  [PASS] pagada por el propietario
+  [PASS] las comisiones liquidadas quedan PAID
+  [PASS] el pago de la liquidación queda como egreso en caja
+
+[H.9] Los cambios de tarifas no alteran operaciones históricas
+  [PASS] comisión histórica: mismo valor tras cambiar precio y regla — 18800 → 18800
+  [PASS] comisión histórica: misma base neta
+  [PASS] comisión histórica: mismo snapshot (copia inmutable)
+  [PASS] cita histórica conserva su precio copiado (priceSnapshot) — 50000 (original 50000)
+  [PASS] la nueva versión de la regla es la vigente (70%)
+
+[H.10a] WhatsApp sin configurar: falla de forma controlada y todo sigue funcionando
+  [PASS] estado: integración pendiente de configuración
+  [PASS] mensaje de la reserva H.1 quedó PENDING_CONFIG (sin afirmar envío) — estado PENDING_CONFIG
+  [PASS] sin id de proveedor inventado
+  [PASS] la agenda sigue funcionando sin WhatsApp
+  [PASS] notificación interna generada igualmente — 14 notificaciones
+  [PASS] envío de prueba rechazado con explicación (400)
+
+──────── FASE A: 56 pass · 0 fail ────────
+
+  [config] .env con proveedor simulado; reiniciando servidor…
+  servidor reiniciado.
+
+════════ FASE B · H.10 con proveedor simulado (WhatsApp configurado) ════════
+  [PASS] integración configurada con el proveedor simulado — proveedor: Proveedor compatible con Cloud API
+  [PASS] mensaje de prueba enviado → SENT con id del proveedor — id wamid.MOCKMVU08DM3Q2Y645
+  [PASS] reserva con teléfono creada — código MB-NFMKUK
+  [PASS] la reserva se crea aunque el proveedor falle (fail-safe) — código MB-2K58PU
+  esperando reintentos automáticos (hasta 20 s)…
+  [PASS] confirmación de reserva enviada (SENT, id wamid) — estado SENT
+  [PASS] proveedor que siempre falla → FAILED tras 3 intentos (controlado) — estado FAILED, intentos 3
+  [PASS] error del proveedor registrado (nunca se afirma que se envió) — HTTP 500: {"error":{"message":"(mock) fallo simulado del pro
+  [PASS] fallo transitorio → reintentos automáticos hasta SENT (3.er intento) — estado SENT, intentos 3
+  [PASS] protección contra notificaciones duplicadas (1 mensaje por evento) — mensajes: 1
+  [PASS] reintento manual de fallidos responde sin error
+  [PASS] la agenda sigue operativa durante fallos de WhatsApp
+  (fase B completada en 10 s)
+
+──────── FASE B: 67 pass · 0 fail ────────
+
+  [config] .env restaurado; reiniciando servidor…
+  servidor reiniciado.
+  [PASS] estado final: integración vuelve a «pendiente de configuración»
+
+RESULTADO FINAL: 68 pass · 0 fail (33 s)

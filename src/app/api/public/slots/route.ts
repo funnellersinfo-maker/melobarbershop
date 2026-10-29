@@ -21,7 +21,8 @@ export async function GET(req: NextRequest) {
     const url = new URL(req.url);
     const serviceId = url.searchParams.get("serviceId") ?? "";
     const date = url.searchParams.get("date") ?? "";
-    const barberParam = (url.searchParams.get("barberId") ?? "ANY").toUpperCase();
+    const rawBarber = (url.searchParams.get("barberId") ?? "ANY").trim();
+    const barberParam = rawBarber === "" || rawBarber.toUpperCase() === "ANY" ? "ANY" : rawBarber;
     if (!serviceId) throw new ApiError(400, "serviceId es obligatorio");
     if (!DATE_RE.test(date)) throw new ApiError(400, "date debe ser YYYY-MM-DD");
     if (date < dateKeyInBogota(new Date())) throw new ApiError(400, "No se pueden consultar horarios de días pasados");

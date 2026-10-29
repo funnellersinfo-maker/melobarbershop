@@ -32,6 +32,7 @@ export async function GET(req: NextRequest) {
     const commissions = await db.commission.findMany({
       where,
       include: {
+        barber: { select: { id: true, name: true } },
         appointment: {
           select: {
             id: true,

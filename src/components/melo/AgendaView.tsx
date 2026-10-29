@@ -239,8 +239,28 @@ export function AppointmentDetail({
     }
   }
 
-  if (detailQ.loading) return <Sheet open><SheetContent><LoadingBlock /></SheetContent></Sheet>;
-  if (!appt) return <Sheet open><SheetContent><ErrorBlock message="Cita no encontrada" onRetry={detailQ.reload} /></SheetContent></Sheet>;
+  if (detailQ.loading)
+    return (
+      <Sheet open>
+        <SheetContent>
+          <SheetHeader className="sr-only">
+            <SheetTitle>Cargando cita</SheetTitle>
+          </SheetHeader>
+          <LoadingBlock />
+        </SheetContent>
+      </Sheet>
+    );
+  if (!appt)
+    return (
+      <Sheet open>
+        <SheetContent>
+          <SheetHeader className="sr-only">
+            <SheetTitle>Cita no encontrada</SheetTitle>
+          </SheetHeader>
+          <ErrorBlock message="Cita no encontrada" onRetry={detailQ.reload} />
+        </SheetContent>
+      </Sheet>
+    );
 
   const canManage = user.role === "OWNER" || appt.barber.id === user.id;
   const canSeeFinancial = !!appt.financial;
