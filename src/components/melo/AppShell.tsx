@@ -1,10 +1,9 @@
 "use client";
-// Shell de la aplicación: navegación por rol, campana de notificaciones y sesión.
+// Shell del panel por rol (propietario / barbero) con campana y permisos.
 import { useEffect, useMemo, useState } from "react";
-import { api, useData } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { getDB, getSession, setSession, type SessionUser } from "@/lib/store";
 import { BrandLockup, PoleStripe, Logo } from "@/components/melo/ui";
-import type { SessionUser } from "@/components/melo/LoginView";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
@@ -12,13 +11,14 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   LayoutDashboard, CalendarDays, Wallet, Percent, HandCoins, SlidersHorizontal, Receipt, Scissors, Users, BarChart3,
-  Bell, History, Settings, LogOut, CheckCheck, BadgeCheck, Clock, ChevronDown,
+  Bell, History, Settings, LogOut, CheckCheck, Clock, ChevronDown, MessageSquareShare,
 } from "lucide-react";
+import { fmtDateMedium, timeHMInBogota } from "@/lib/time";
 
 export type ViewId =
   | "dashboard" | "agenda" | "payments" | "commissions" | "settlements" | "adjustments"
   | "expenses" | "catalog" | "workers" | "reports" | "notifications" | "audit" | "settings"
-  | "myCommissions" | "myAvailability" | "myServices";
+  | "social" | "myProfile" | "myAvailability";
 
 export function AppShell({
   user,
@@ -33,48 +33,60 @@ export function AppShell({
   onLogout: () => void;
   children: React.ReactNode;
 }) {
-  const notifQ = useData<{ notifications: Array<{ id: string; title: string; message: string; read: boolean; createdAt: string }>; unread: number }>(
-    "/api/notifications"
-  );
-  const [now, setNow] = useState(Date.now());
+  const [tick, setTick] = useState(0);
+  const [, force] = useState(0);
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(t);
+    const t = setInterval(() => setTick((n) => n + 1), 30_000);
+    const h = () => force((n) => n + 1);
+    window.addEventListener("melo:db-changed", h);
+    return () => { clearInterval(t); window.removeEventListener("melo:db-changed", h); };
   }, []);
 
+  const db = getDB();
   const isOwner = user.role === "OWNER";
-  const items: Array<{ id: ViewId; label: string; icon: React.ReactNode }> = isOwner
+  const myId = isOwner ? "OWNER" : user.id;
+  const myNotifs = db.notifications.filter((n) => n.userId === myId);
+  const unread = myNotifs.filter((n) => !n.read).length;
+
+  const barberPerms = !isOwner ? (db.barbers.find((b) => b.id === user.id)?.permissions ?? {}) : {};
+  const perm = (k: string) => isOwner || !!barberPerms[k];
+
+  const items: Array<{ id: ViewId; label: string; icon: React.ReactNode; show: boolean }> = isOwner
     ? [
-        { id: "dashboard", label: "Panel", icon: <LayoutDashboard className="h-4 w-4" /> },
-        { id: "agenda", label: "Agenda", icon: <CalendarDays className="h-4 w-4" /> },
-        { id: "payments", label: "Pagos y caja", icon: <Wallet className="h-4 w-4" /> },
-        { id: "commissions", label: "Comisiones", icon: <Percent className="h-4 w-4" /> },
-        { id: "settlements", label: "Liquidaciones", icon: <HandCoins className="h-4 w-4" /> },
-        { id: "adjustments", label: "Ajustes", icon: <SlidersHorizontal className="h-4 w-4" /> },
-        { id: "expenses", label: "Gastos", icon: <Receipt className="h-4 w-4" /> },
-        { id: "catalog", label: "Catálogo", icon: <Scissors className="h-4 w-4" /> },
-        { id: "workers", label: "Equipo", icon: <Users className="h-4 w-4" /> },
-        { id: "reports", label: "Reportes", icon: <BarChart3 className="h-4 w-4" /> },
-        { id: "notifications", label: "Notificaciones", icon: <Bell className="h-4 w-4" /> },
-        { id: "audit", label: "Historial", icon: <History className="h-4 w-4" /> },
-        { id: "settings", label: "Configuración", icon: <Settings className="h-4 w-4" /> },
+        { id: "dashboard", label: "Panel", icon: <LayoutDashboard className="h-4 w-4" />, show: true },
+        { id: "agenda", label: "Agenda", icon: <CalendarDays className="h-4 w-4" />, show: true },
+        { id: "payments", label: "Pagos y caja", icon: <Wallet className="h-4 w-4" />, show: true },
+        { id: "commissions", label: "Comisiones", icon: <Percent className="h-4 w-4" />, show: true },
+        { id: "settlements", label: "Liquidaciones", icon: <HandCoins className="h-4 w-4" />, show: true },
+        { id: "adjustments", label: "Ajustes", icon: <SlidersHorizontal className="h-4 w-4" />, show: true },
+        { id: "expenses", label: "Gastos", icon: <Receipt className="h-4 w-4" />, show: true },
+        { id: "catalog", label: "Catálogo", icon: <Scissors className="h-4 w-4" />, show: true },
+        { id: "workers", label: "Equipo", icon: <Users className="h-4 w-4" />, show: true },
+        { id: "social", label: "Comunidad", icon: <MessageSquareShare className="h-4 w-4" />, show: true },
+        { id: "reports", label: "Reportes", icon: <BarChart3 className="h-4 w-4" />, show: true },
+        { id: "notifications", label: "Notificaciones", icon: <Bell className="h-4 w-4" />, show: true },
+        { id: "audit", label: "Historial", icon: <History className="h-4 w-4" />, show: true },
+        { id: "settings", label: "Configuración", icon: <Settings className="h-4 w-4" />, show: true },
       ]
     : [
-        { id: "dashboard", label: "Mi día", icon: <LayoutDashboard className="h-4 w-4" /> },
-        { id: "agenda", label: "Mi agenda", icon: <CalendarDays className="h-4 w-4" /> },
-        { id: "payments", label: "Mis cobros", icon: <Wallet className="h-4 w-4" /> },
-        { id: "myCommissions", label: "Mis comisiones", icon: <Percent className="h-4 w-4" /> },
-        { id: "settlements", label: "Mis liquidaciones", icon: <HandCoins className="h-4 w-4" /> },
-        { id: "myAvailability", label: "Mi disponibilidad", icon: <Clock className="h-4 w-4" /> },
-        { id: "myServices", label: "Mis servicios", icon: <Scissors className="h-4 w-4" /> },
-        { id: "notifications", label: "Notificaciones", icon: <Bell className="h-4 w-4" /> },
+        { id: "dashboard", label: "Mi día", icon: <LayoutDashboard className="h-4 w-4" />, show: true },
+        { id: "agenda", label: "Mi agenda", icon: <CalendarDays className="h-4 w-4" />, show: true },
+        { id: "payments", label: "Mis cobros", icon: <Wallet className="h-4 w-4" />, show: perm("payments.register") },
+        { id: "myCommissions" as ViewId, label: "Mis comisiones", icon: <Percent className="h-4 w-4" />, show: perm("commissions.view") },
+        { id: "settlements", label: "Mis liquidaciones", icon: <HandCoins className="h-4 w-4" />, show: perm("settlements.view") },
+        { id: "myProfile", label: "Mi perfil", icon: <Users className="h-4 w-4" />, show: perm("profile.edit") },
+        { id: "myAvailability", label: "Mi disponibilidad", icon: <Clock className="h-4 w-4" />, show: perm("schedule.manageOwn") },
+        { id: "notifications", label: "Notificaciones", icon: <Bell className="h-4 w-4" />, show: true },
       ];
+  const visible = items.filter((i) => i.show);
+  const current = visible.find((i) => i.id === view) ?? visible[0];
 
-  const current = items.find((i) => i.id === view) ?? items[0];
-
-  async function markAllRead() {
-    await api("/api/notifications", { method: "POST" });
-    notifQ.reload();
+  function markAllRead() {
+    const { mutateDB } = require("@/lib/store") as typeof import("@/lib/store");
+    mutateDB((d) => {
+      for (const n of d.notifications) if (n.userId === myId) n.read = true;
+    });
+    force((n) => n + 1);
   }
 
   return (
@@ -84,7 +96,7 @@ export function AppShell({
           <BrandLockup compact />
           <div className="flex items-center gap-2">
             <span className="hidden rounded-full border border-ink/10 bg-ivory px-3 py-1 text-xs text-ink-soft md:inline">
-              {current.icon} {current.label}
+              {current?.icon} {current?.label}
             </span>
 
             {/* campana */}
@@ -92,9 +104,9 @@ export function AppShell({
               <PopoverTrigger asChild>
                 <Button variant="outline" size="icon" className="relative border-ink/15 bg-ivory" aria-label="Notificaciones">
                   <Bell className="h-4 w-4" />
-                  {notifQ.data && notifQ.data.unread > 0 ? (
+                  {unread > 0 ? (
                     <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-melo px-1 text-[10px] font-bold text-ivory">
-                      {notifQ.data.unread > 99 ? "99+" : notifQ.data.unread}
+                      {unread > 99 ? "99+" : unread}
                     </span>
                   ) : null}
                 </Button>
@@ -107,15 +119,15 @@ export function AppShell({
                   </button>
                 </div>
                 <div className="max-h-96 overflow-y-auto nice-scroll">
-                  {!notifQ.data || notifQ.data.notifications.length === 0 ? (
+                  {myNotifs.length === 0 ? (
                     <div className="px-4 py-8 text-center text-sm text-ink-soft">Sin notificaciones por ahora.</div>
                   ) : (
-                    notifQ.data.notifications.slice(0, 30).map((n) => (
+                    myNotifs.slice(0, 30).map((n) => (
                       <div key={n.id} className={cn("border-b border-ink/5 px-4 py-3", !n.read && "bg-brass/5")}>
                         <div className="flex items-start justify-between gap-2">
                           <span className={cn("text-sm font-semibold", n.read ? "text-ink/70" : "text-ink")}>{n.title}</span>
                           <span className="whitespace-nowrap text-[10px] text-ink/40">
-                            {new Date(n.createdAt).toLocaleString("es-CO", { timeZone: "America/Bogota", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                            {fmtDateMedium(new Date(n.createdAt))} {timeHMInBogota(new Date(n.createdAt))}
                           </span>
                         </div>
                         <div className="mt-0.5 text-xs text-ink-soft">{n.message}</div>
@@ -136,9 +148,16 @@ export function AppShell({
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" className="border-ink/15 bg-ivory pl-2">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-brass/20 text-[10px] font-bold text-brass-dark">
-                    {user.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}
-                  </span>
+                  {(() => {
+                    const b = !isOwner ? db.barbers.find((x) => x.id === user.id) : null;
+                    return b?.photo ? (
+                      <img src={b.photo} alt={b.name} className="h-6 w-6 rounded-full object-cover" />
+                    ) : (
+                      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-brass/20 text-[10px] font-bold text-brass-dark">
+                        {user.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}
+                      </span>
+                    );
+                  })()}
                   <span className="hidden max-w-28 truncate sm:inline">{user.name.split(" ")[0]}</span>
                   <ChevronDown className="h-4 w-4 opacity-60" />
                 </Button>
@@ -146,10 +165,7 @@ export function AppShell({
               <DropdownMenuContent align="end" className="w-64">
                 <DropdownMenuLabel>
                   <div className="text-sm font-semibold">{user.name}</div>
-                  <div className="text-xs text-ink-soft">{user.email}</div>
-                  <div className="mt-1 inline-flex items-center gap-1 rounded-full bg-brass/15 px-2 py-0.5 text-[10px] font-semibold text-brass-dark">
-                    <BadgeCheck className="h-3 w-3" /> {user.role === "OWNER" ? "Propietario" : "Barbero"}
-                  </div>
+                  <div className="text-xs text-ink-soft">{isOwner ? "Propietario" : "Barbero"}</div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => setView("notifications")}>
@@ -172,9 +188,8 @@ export function AppShell({
       </header>
 
       <div className="mx-auto flex w-full max-w-7xl flex-1 gap-6 px-4 py-6">
-        {/* nav escritorio */}
         <nav className="sticky top-24 hidden h-fit w-60 shrink-0 flex-col gap-1 rounded-2xl border border-ink/10 bg-ivory p-3 lg:flex">
-          {items.map((it) => (
+          {visible.map((it) => (
             <button
               key={it.id}
               onClick={() => setView(it.id)}
@@ -184,17 +199,16 @@ export function AppShell({
               )}
             >
               {it.icon} {it.label}
-              {it.id === "notifications" && notifQ.data && notifQ.data.unread > 0 ? (
-                <span className="ml-auto rounded-full bg-melo px-1.5 text-[10px] font-bold text-ivory">{notifQ.data.unread}</span>
+              {it.id === "notifications" && unread > 0 ? (
+                <span className="ml-auto rounded-full bg-melo px-1.5 text-[10px] font-bold text-ivory">{unread}</span>
               ) : null}
             </button>
           ))}
         </nav>
 
         <div className="min-w-0 flex-1">
-          {/* nav móvil */}
           <div className="mb-4 flex gap-2 overflow-x-auto pb-1 nice-scroll lg:hidden">
-            {items.map((it) => (
+            {visible.map((it) => (
               <button
                 key={it.id}
                 onClick={() => setView(it.id)}
@@ -212,7 +226,7 @@ export function AppShell({
       </div>
 
       <footer className="mt-auto bg-ink py-3 text-center text-xs text-cream/60">
-        MELO BARBERSHOP · Panel interno · {new Date(now).toLocaleDateString("es-CO", { timeZone: "America/Bogota", weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+        MELO BARBERSHOP · Panel {isOwner ? "del propietario" : "de barbero"} · {new Date().toLocaleDateString("es-CO", { timeZone: "America/Bogota", weekday: "long", day: "numeric", month: "long", year: "numeric" })}
       </footer>
     </div>
   );

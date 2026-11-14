@@ -1,97 +1,62 @@
 "use client";
-// Reportes del propietario: resumen financiero, desglose por barbero/servicio y
-// cartera pendiente (requisito D: distinguir ventas por barbero vs dinero del negocio).
-import { useState } from "react";
-import { useData } from "@/lib/api";
+// Reportes del propietario con exportación a Excel multi-hoja.
+import { useEffect, useMemo, useState } from "react";
 import { cop } from "@/lib/money";
 import { fmtDateMedium } from "@/lib/time";
-import { SectionTitle, LoadingBlock, ErrorBlock, EmptyState, Chip } from "@/components/melo/ui";
+import { getDB } from "@/lib/store";
+import { periodSummary, barberBreakdown, serviceBreakdown, pendingReceivables, periodRange } from "@/lib/engines/finance";
+import { SectionTitle, EmptyState, Chip } from "@/components/melo/ui";
+import { exportFullReportExcel } from "@/lib/excel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { BarChart3, Users, Scissors, Wallet, FileDown } from "lucide-react";
+import { BarChart3, Users, Scissors, Wallet, FileSpreadsheet } from "lucide-react";
 import { cn } from "@/lib/utils";
-
-type SummaryResponse = {
-  summary: {
-    period: { label: string };
-    ventas: { brutas: number; descuentos: number; netas: number; completadas: number };
-    caja: { cobrado: number; devuelto: number; porMetodo: Record<string, number>; gastos: number; liquidacionesPagadas: number; anticiposPagados: number; totalPagosBarberos: number; flujoNeto: number };
-    comisiones: { generadas: number; pagadas: number; pendientes: number; pendientesConfigurar: number };
-    resultado: { antesComisiones: number; despuesComisiones: number; operativoEstimado: number };
-  };
-  receivables: { totalPendiente: number; rows: Array<{ code: string; client: string; net: number; pagado: number; pendiente: number; completedAt: string }> };
-  conventions: { ventasYComisiones: string; caja: string; resultado: string };
-};
-
-type BreakdownResponse = {
-  period: string;
-  byBarber: Array<{ barberId: string; barberName: string; citas: number; brutas: number; descuentos: number; netas: number; comisiones: number; negocio: number; cobrado: number }>;
-  byService: Array<{ serviceId: string; serviceName: string; citas: number; brutas: number; netas: number; comisiones: number }>;
-};
+import { toast } from "@/hooks/use-toast";
 
 export function ReportsView() {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const h = () => setTick((n) => n + 1);
+    window.addEventListener("melo:db-changed", h);
+    return () => window.removeEventListener("melo:db-changed", h);
+  }, []);
+
   const today = new Date();
-  const iso = (d: Date) => d.toISOString().slice(0, 10);
-  const lastMonth = new Date(today.getTime() - 29 * 24 * 3600 * 1000);
+  const iso = (d: Date) => dateKeyLocal(d);
   const [preset, setPreset] = useState<"today" | "week" | "month" | "custom">("month");
-  const [from, setFrom] = useState(iso(lastMonth));
+  const [from, setFrom] = useState(iso(new Date(today.getTime() - 29 * 24 * 3600 * 1000)));
   const [to, setTo] = useState(iso(today));
 
-  const query = preset === "custom" ? `from=${from}&to=${to}` : `preset=${preset}`;
-  const sumQ = useData<SummaryResponse>(`/api/reports/summary?${query}`, [query]);
-  const brkQ = useData<BreakdownResponse>(`/api/reports/breakdown?${query}`, [query]);
+  const db = getDB();
+  const range = useMemo(() => periodRange(preset, from, to), [preset, from, to, tick]);
+  const summary = useMemo(() => periodSummary(db, range.from, range.to, range.label), [range, tick]);
+  const byBarber = useMemo(() => barberBreakdown(db, range.from, range.to), [range, tick]);
+  const byService = useMemo(() => serviceBreakdown(db, range.from, range.to), [range, tick]);
+  const receivables = useMemo(() => pendingReceivables(db), [tick]);
 
-  function exportCSV() {
-    const s = sumQ.data?.summary;
-    const b = brkQ.data;
-    if (!s || !b) return;
-    const lines: string[] = [];
-    lines.push(`MELO BARBERSHOP; Reporte; ${s.period.label}`);
-    lines.push("");
-    lines.push("CONCEPTO;VALOR (COP)");
-    lines.push(`Ventas brutas;${s.ventas.brutas}`);
-    lines.push(`Descuentos;${s.ventas.descuentos}`);
-    lines.push(`Ventas netas;${s.ventas.netas}`);
-    lines.push(`Dinero cobrado;${s.caja.cobrado}`);
-    lines.push(`Devoluciones;${s.caja.devuelto}`);
-    lines.push(`Comisiones generadas;${s.comisiones.generadas}`);
-    lines.push(`Comisiones pagadas;${s.comisiones.pagadas}`);
-    lines.push(`Comisiones pendientes;${s.comisiones.pendientes}`);
-    lines.push(`Gastos;${s.caja.gastos}`);
-    lines.push(`Pagos a barberos;${s.caja.totalPagosBarberos}`);
-    lines.push(`Flujo de caja;${s.caja.flujoNeto}`);
-    lines.push(`Resultado antes de comisiones;${s.resultado.antesComisiones}`);
-    lines.push(`Resultado despues de comisiones;${s.resultado.despuesComisiones}`);
-    lines.push(`Resultado operativo estimado;${s.resultado.operativoEstimado}`);
-    lines.push("");
-    lines.push("POR BARBERO");
-    lines.push("Barbero;Citas;Brutas;Descuentos;Netas;Comisiones;Del negocio;Cobrado");
-    for (const r of b.byBarber) lines.push(`${r.barberName};${r.citas};${r.brutas};${r.descuentos};${r.netas};${r.comisiones};${r.negocio};${r.cobrado}`);
-    lines.push("");
-    lines.push("POR SERVICIO");
-    lines.push("Servicio;Citas;Brutas;Netas;Comisiones");
-    for (const r of b.byService) lines.push(`${r.serviceName};${r.citas};${r.brutas};${r.netas};${r.comisiones}`);
-    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `melo-reporte-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+  function exportExcel() {
+    exportFullReportExcel({
+      periodLabel: range.label,
+      summary,
+      byBarber,
+      byService,
+      receivables,
+    });
+    toast({ title: "Excel generado", description: "Reporte completo con resumen, barberos, servicios y cartera." });
   }
 
   return (
     <div>
       <SectionTitle
         title="Reportes"
-        sub="Diarios, semanales y mensuales. Convenciones claras: ventas y comisiones por fecha de completado; caja por fecha de transacción; cada concepto se descuenta una sola vez."
+        sub="Diarios, semanales y mensuales. Ventas y comisiones por fecha de completado; caja por fecha de transacción; cada concepto se descuenta una sola vez."
         right={
-          <Button variant="outline" onClick={exportCSV} className="border-brass/50 text-brass-dark hover:bg-brass/10">
-            <FileDown className="mr-1 h-4 w-4" /> Exportar CSV
+          <Button variant="outline" onClick={exportExcel} className="border-good/50 text-good hover:bg-good/10">
+            <FileSpreadsheet className="mr-1 h-4 w-4" /> Exportar Excel completo
           </Button>
         }
       />
@@ -115,7 +80,7 @@ export function ReportsView() {
             <div className="grid gap-1"><Label className="text-xs">Hasta</Label><Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-40" /></div>
           </>
         ) : null}
-        {sumQ.data ? <Chip className="ml-auto">{sumQ.data.summary.period.label}</Chip> : null}
+        <Chip className="ml-auto">{range.label}</Chip>
       </div>
 
       <Tabs defaultValue="resumen">
@@ -127,14 +92,11 @@ export function ReportsView() {
         </TabsList>
 
         <TabsContent value="resumen" className="mt-4">
-          {sumQ.loading ? <LoadingBlock /> : sumQ.error ? <ErrorBlock message={sumQ.error} onRetry={sumQ.reload} /> : null}
-          {sumQ.data ? <SummaryGrid data={sumQ.data} /> : null}
+          <SummaryGrid summary={summary} />
         </TabsContent>
 
         <TabsContent value="porBarbero" className="mt-4">
-          {brkQ.loading ? <LoadingBlock /> : brkQ.error ? <ErrorBlock message={brkQ.error} onRetry={brkQ.reload} /> : null}
-          {brkQ.data && brkQ.data.byBarber.length === 0 ? <EmptyState title="Sin datos en el período" /> : null}
-          {brkQ.data && brkQ.data.byBarber.length > 0 ? (
+          {byBarber.length === 0 ? <EmptyState title="Sin datos en el período" /> : (
             <div className="overflow-x-auto rounded-xl border border-ink/10 bg-ivory">
               <Table>
                 <TableHeader>
@@ -150,7 +112,7 @@ export function ReportsView() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {brkQ.data.byBarber.map((r) => (
+                  {byBarber.map((r) => (
                     <TableRow key={r.barberId}>
                       <TableCell className="font-medium">{r.barberName}</TableCell>
                       <TableCell className="text-right tabular-nums">{r.citas}</TableCell>
@@ -165,15 +127,14 @@ export function ReportsView() {
                 </TableBody>
               </Table>
               <div className="px-4 py-3 text-xs text-ink-soft">
-                “Del negocio” = ventas netas del barbero − sus comisiones. Así se distingue lo que vende cada barbero de lo que realmente queda para el negocio (requisito D).
+                “Del negocio” = ventas netas del barbero − sus comisiones. Así se distingue lo que vende cada barbero de lo que realmente queda para el negocio.
               </div>
             </div>
-          ) : null}
+          )}
         </TabsContent>
 
         <TabsContent value="porServicio" className="mt-4">
-          {brkQ.loading ? <LoadingBlock /> : null}
-          {brkQ.data && brkQ.data.byService.length > 0 ? (
+          {byService.length > 0 ? (
             <div className="overflow-x-auto rounded-xl border border-ink/10 bg-ivory">
               <Table>
                 <TableHeader>
@@ -186,7 +147,7 @@ export function ReportsView() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {brkQ.data.byService.map((r) => (
+                  {byService.map((r) => (
                     <TableRow key={r.serviceId}>
                       <TableCell className="font-medium">{r.serviceName}</TableCell>
                       <TableCell className="text-right tabular-nums">{r.citas}</TableCell>
@@ -202,53 +163,53 @@ export function ReportsView() {
         </TabsContent>
 
         <TabsContent value="cartera" className="mt-4">
-          {sumQ.loading ? <LoadingBlock /> : null}
-          {sumQ.data ? (
-            <>
-              <div className="mb-4 rounded-xl border border-warn/40 bg-warn/5 p-4">
-                <div className="text-xs uppercase tracking-wide text-ink-soft">Total pendiente de cobro (todas las fechas)</div>
-                <div className="font-display text-3xl font-bold text-warn">{cop(sumQ.data.receivables.totalPendiente)}</div>
-              </div>
-              {sumQ.data.receivables.rows.length === 0 ? (
-                <EmptyState title="Cartera al día" sub="No hay citas completadas con saldo pendiente." />
-              ) : (
-                <div className="overflow-x-auto rounded-xl border border-ink/10 bg-ivory">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Completada</TableHead>
-                        <TableHead>Cita</TableHead>
-                        <TableHead>Cliente</TableHead>
-                        <TableHead className="text-right">Neto</TableHead>
-                        <TableHead className="text-right">Pagado</TableHead>
-                        <TableHead className="text-right">Pendiente</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {sumQ.data.receivables.rows.map((r) => (
-                        <TableRow key={r.code}>
-                          <TableCell className="text-sm">{fmtDateMedium(new Date(r.completedAt))}</TableCell>
-                          <TableCell className="font-medium">{r.code}</TableCell>
-                          <TableCell className="text-sm">{r.client}</TableCell>
-                          <TableCell className="text-right tabular-nums">{cop(r.net)}</TableCell>
-                          <TableCell className="text-right tabular-nums text-good">{cop(r.pagado)}</TableCell>
-                          <TableCell className="text-right font-bold tabular-nums text-warn">{cop(r.pendiente)}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </>
-          ) : null}
+          <div className="mb-4 rounded-xl border border-warn/40 bg-warn/5 p-4">
+            <div className="text-xs uppercase tracking-wide text-ink-soft">Total pendiente de cobro (todas las fechas)</div>
+            <div className="font-display text-3xl font-bold text-warn">{cop(receivables.totalPendiente)}</div>
+          </div>
+          {receivables.rows.length === 0 ? (
+            <EmptyState title="Cartera al día" sub="No hay citas completadas con saldo pendiente." />
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-ink/10 bg-ivory">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Completada</TableHead>
+                    <TableHead>Cita</TableHead>
+                    <TableHead>Cliente</TableHead>
+                    <TableHead className="text-right">Neto</TableHead>
+                    <TableHead className="text-right">Pagado</TableHead>
+                    <TableHead className="text-right">Pendiente</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {receivables.rows.map((r) => (
+                    <TableRow key={r.code}>
+                      <TableCell className="text-sm">{fmtDateMedium(new Date(r.completedAt))}</TableCell>
+                      <TableCell className="font-medium">{r.code}</TableCell>
+                      <TableCell className="text-sm">{r.client}</TableCell>
+                      <TableCell className="text-right tabular-nums">{cop(r.net)}</TableCell>
+                      <TableCell className="text-right tabular-nums text-good">{cop(r.pagado)}</TableCell>
+                      <TableCell className="text-right font-bold tabular-nums text-warn">{cop(r.pendiente)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
         </TabsContent>
       </Tabs>
     </div>
   );
 }
 
-function SummaryGrid({ data }: { data: SummaryResponse }) {
-  const s = data.summary;
+function dateKeyLocal(d: Date): string {
+  const p = new Date(d.getTime() - 5 * 3600 * 1000);
+  return `${p.getUTCFullYear()}-${String(p.getUTCMonth() + 1).padStart(2, "0")}-${String(p.getUTCDate()).padStart(2, "0")}`;
+}
+
+function SummaryGrid({ summary }: { summary: ReturnType<typeof periodSummary> }) {
+  const s = summary;
   const rows: Array<{ label: string; value: number; cls?: string; hint?: string }> = [
     { label: "Ventas brutas (completadas)", value: s.ventas.brutas, hint: `${s.ventas.completadas} servicios` },
     { label: "Descuentos", value: -s.ventas.descuentos, cls: "text-melo-dark" },
@@ -263,8 +224,8 @@ function SummaryGrid({ data }: { data: SummaryResponse }) {
   return (
     <div>
       <div className="mb-4 grid gap-2 rounded-xl border border-ink/10 bg-ivory p-4 text-xs text-ink-soft">
-        <div><b className="text-ink">Convenciones:</b> {data.conventions.ventasYComisiones}. {data.conventions.caja}.</div>
-        <div>{data.conventions.resultado}. Nada se descuenta dos veces: los pagos a barberos solo afectan la caja, no el resultado operativo.</div>
+        <div><b className="text-ink">Convenciones:</b> ventas y comisiones por fecha de completado; caja por fecha de transacción.</div>
+        <div>El resultado operativo descuenta una sola vez comisiones y gastos. Los pagos a barberos solo afectan la caja.</div>
       </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {rows.map((r) => (

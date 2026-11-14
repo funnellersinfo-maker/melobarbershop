@@ -1,11 +1,12 @@
 "use client";
-// Liquidaciones de comisiones: borrador → aprobada → pagada (requisito C).
-// Los totales los calcula el servidor; anticipos y devoluciones restan.
-import { useMemo, useState } from "react";
-import { api, useData } from "@/lib/api";
+// Liquidaciones: borrador → aprobada → pagada, con Excel.
+import { useEffect, useMemo, useState } from "react";
 import { cop } from "@/lib/money";
-import { fmtDateMedium, timeHMInBogota, dateKeyInBogota } from "@/lib/time";
-import { SectionTitle, LoadingBlock, ErrorBlock, EmptyState, Chip, METHOD_LABEL } from "@/components/melo/ui";
+import { fmtDateMedium } from "@/lib/time";
+import { getDB, type SessionUser } from "@/lib/store";
+import { createSettlement, approveSettlement, paySettlement } from "@/lib/engines/finance";
+import { SectionTitle, EmptyState, Chip, METHOD_LABEL } from "@/components/melo/ui";
+import { exportSettlementsExcel } from "@/lib/excel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,49 +16,61 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "@/hooks/use-toast";
-import { HandCoins, Plus, BadgeCheck, Banknote, ChevronDown } from "lucide-react";
+import { HandCoins, Plus, BadgeCheck, Banknote, ChevronDown, FileDown } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { SessionUser } from "@/components/melo/LoginView";
-
-type SettlementRow = {
-  id: string;
-  code: string;
-  status: "DRAFT" | "APPROVED" | "PAID";
-  notes: string | null;
-  totalCommissions: number;
-  totalAdjustments: number;
-  totalAmount: number;
-  approvedAt: string | null;
-  paidAt: string | null;
-  paymentMethod: string | null;
-  createdAt: string;
-  barber: { id: string; name: string };
-  approvedBy: { name: string } | null;
-  items: Array<{
-    itemType: string;
-    label: string;
-    amount: number;
-    commission: { appointment: { code: string; service: { name: string } } } | null;
-    adjustment: { type: string; reason: string } | null;
-  }>;
-};
-
-type CommissionLite = { id: string; calculatedAmount: number; baseAmount: number; status: string; appointment: { code: string; service: { name: string }; completedAt: string | null } };
-type AdjustmentLite = { id: string; type: string; amount: number; reason: string; status: string; createdAt: string };
 
 export function SettlementsView({ user }: { user: SessionUser }) {
   const isOwner = user.role === "OWNER";
-  const q = useData<{ settlements: SettlementRow[] }>("/api/settlements", []);
+  const [tick, setTick] = useState(0);
   const [newOpen, setNewOpen] = useState(false);
-  const [detail, setDetail] = useState<SettlementRow | null>(null);
+  const [detail, setDetail] = useState<string | null>(null);
 
-  const stats = useMemo(() => {
-    const list = q.data?.settlements ?? [];
-    return {
-      totalPagado: list.filter((s) => s.status === "PAID").reduce((sum, s) => sum + s.totalAmount, 0),
-      pendientes: list.filter((s) => s.status !== "PAID").length,
-    };
-  }, [q.data]);
+  useEffect(() => {
+    const h = () => setTick((n) => n + 1);
+    window.addEventListener("melo:db-changed", h);
+    return () => window.removeEventListener("melo:db-changed", h);
+  }, []);
+
+  const db = getDB();
+  const settlements = useMemo(
+    () => db.settlements.filter((s) => (isOwner ? true : s.barberId === user.id)),
+    [tick, isOwner]
+  );
+
+  const stats = useMemo(() => ({
+    totalPagado: settlements.filter((s) => s.status === "PAID").reduce((sum, s) => sum + s.totalAmount, 0),
+    pendientes: settlements.filter((s) => s.status !== "PAID").length,
+  }), [settlements]);
+
+  function act(fn: () => void, okMsg: string) {
+    try {
+      fn();
+      toast({ title: okMsg });
+      setTick((n) => n + 1);
+    } catch (err) {
+      toast({ title: "Acción rechazada", description: err instanceof Error ? err.message : "Error", variant: "destructive" });
+    }
+  }
+
+  function downloadExcel() {
+    exportSettlementsExcel(
+      settlements.map((s) => ({
+        codigo: s.code,
+        barbero: db.barbers.find((b) => b.id === s.barberId)?.name ?? "—",
+        estado: s.status === "PAID" ? "Pagada" : s.status === "APPROVED" ? "Aprobada" : "Borrador",
+        comisiones: s.totalCommissions,
+        ajustes: s.totalAdjustments,
+        total: s.totalAmount,
+        aprobada: s.approvedAt ? fmtDateMedium(new Date(s.approvedAt)) : "",
+        pagada: s.paidAt ? fmtDateMedium(new Date(s.paidAt)) : "",
+        metodo: s.paymentMethod ? (METHOD_LABEL[s.paymentMethod] ?? s.paymentMethod) : "",
+        items: s.items.map((it) => `${it.label} (${it.amount >= 0 ? "+" : "−"}${cop(Math.abs(it.amount))})`).join(" | "),
+      }))
+    );
+    toast({ title: "Excel generado" });
+  }
+
+  const detailSettlement = detail ? db.settlements.find((s) => s.id === detail) : null;
 
   return (
     <div>
@@ -65,12 +78,15 @@ export function SettlementsView({ user }: { user: SessionUser }) {
         title={isOwner ? "Liquidaciones" : "Mis liquidaciones"}
         sub={
           isOwner
-            ? "Cierra ciclos con cada barbero: selecciona comisiones pendientes y ajustes; los totales los calcula el servidor. Anticipos y devoluciones restan del total a pagar."
-            : "Consulta tus liquidaciones. Por defecto no puedes aprobar las tuyas: lo hace el propietario (salvo permiso excepcional)."
+            ? "Cierra ciclos con cada barbero: selecciona comisiones pendientes y ajustes. Anticipos y devoluciones restan del total a pagar."
+            : "Consulta tus liquidaciones. Por defecto las aprueba el propietario (salvo permiso excepcional)."
         }
         right={
           <div className="flex items-center gap-2">
             <div className="rounded-xl bg-ivory px-4 py-2 text-sm"><span className="text-ink-soft">Pagado:</span> <b>{cop(stats.totalPagado)}</b></div>
+            <Button variant="outline" onClick={downloadExcel} disabled={settlements.length === 0} className="border-good/50 text-good hover:bg-good/10">
+              <FileDown className="mr-1 h-4 w-4" /> Excel
+            </Button>
             {isOwner ? (
               <Button onClick={() => setNewOpen(true)} className="bg-melo hover:bg-melo-dark text-ivory">
                 <Plus className="mr-1 h-4 w-4" /> Nueva liquidación
@@ -80,64 +96,65 @@ export function SettlementsView({ user }: { user: SessionUser }) {
         }
       />
 
-      {q.loading ? <LoadingBlock /> : null}
-      {q.error ? <ErrorBlock message={q.error} onRetry={q.reload} /> : null}
-      {q.data && q.data.settlements.length === 0 ? (
+      {settlements.length === 0 ? (
         <EmptyState title="Sin liquidaciones" sub={isOwner ? "Crea la primera con el botón de arriba." : "El propietario creará liquidaciones con tus comisiones."} />
-      ) : null}
-      {q.data && q.data.settlements.length > 0 ? (
+      ) : (
         <div className="grid gap-3">
-          {q.data.settlements.map((s) => (
-            <div key={s.id} className="rounded-2xl border border-ink/10 bg-ivory p-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <HandCoins className="h-5 w-5 text-brass-dark" />
-                <span className="font-display text-lg font-bold">{s.code}</span>
-                <Chip>{s.barber.name}</Chip>
-                <span className={cn("rounded-full border px-2 py-0.5 text-[11px]",
-                  s.status === "PAID" ? "bg-good/15 text-good border-good/40" : s.status === "APPROVED" ? "bg-pole/10 text-pole border-pole/40" : "bg-warn/15 text-warn border-warn/40")}>
-                  {s.status === "PAID" ? "pagada" : s.status === "APPROVED" ? "aprobada" : "borrador"}
-                </span>
-                <span className="ml-auto font-display text-xl font-bold tabular-nums">{cop(s.totalAmount)}</span>
-              </div>
-              <div className="mt-1 text-sm text-ink-soft">
-                Comisiones {cop(s.totalCommissions)} · ajustes {s.totalAdjustments !== 0 ? `${s.totalAdjustments > 0 ? "+" : "−"} ${cop(Math.abs(s.totalAdjustments))}` : "0"}
-                {s.paidAt ? ` · pagada ${fmtDateMedium(new Date(s.paidAt))}` : ""}
-                {s.approvedBy ? ` · aprobó ${s.approvedBy.name}` : ""}
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Button size="sm" variant="outline" className="border-ink/20" onClick={() => setDetail(s)}>
-                  <ChevronDown className="mr-1 h-3 w-3" /> Detalle ({s.items.length} ítems)
-                </Button>
-                {isOwner && s.status === "DRAFT" ? (
-                  <Button size="sm" className="bg-pole hover:bg-pole/80 text-ivory" onClick={() => act(s, "approve", "Liquidación aprobada")}>
-                    <BadgeCheck className="mr-1 h-3 w-3" /> Aprobar
+          {settlements.map((s) => {
+            const barber = db.barbers.find((b) => b.id === s.barberId);
+            const canApproveOwn = !isOwner && !!barber?.permissions["settlements.approveOwn"];
+            return (
+              <div key={s.id} className="rounded-2xl border border-ink/10 bg-ivory p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <HandCoins className="h-5 w-5 text-brass-dark" />
+                  <span className="font-display text-lg font-bold">{s.code}</span>
+                  <Chip>{barber?.name ?? "—"}</Chip>
+                  <span className={cn("rounded-full border px-2 py-0.5 text-[11px]",
+                    s.status === "PAID" ? "bg-good/15 text-good border-good/40" : s.status === "APPROVED" ? "bg-pole/10 text-pole border-pole/40" : "bg-warn/15 text-warn border-warn/40")}>
+                    {s.status === "PAID" ? "pagada" : s.status === "APPROVED" ? "aprobada" : "borrador"}
+                  </span>
+                  <span className="ml-auto font-display text-xl font-bold tabular-nums">{cop(s.totalAmount)}</span>
+                </div>
+                <div className="mt-1 text-sm text-ink-soft">
+                  Comisiones {cop(s.totalCommissions)} · ajustes {s.totalAdjustments !== 0 ? `${s.totalAdjustments > 0 ? "+" : "−"} ${cop(Math.abs(s.totalAdjustments))}` : "0"}
+                  {s.paidAt ? ` · pagada ${fmtDateMedium(new Date(s.paidAt))}` : ""}
+                  {s.approvedByName ? ` · aprobó ${s.approvedByName}` : ""}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" className="border-ink/20" onClick={() => setDetail(s.id)}>
+                    <ChevronDown className="mr-1 h-3 w-3" /> Detalle ({s.items.length} ítems)
                   </Button>
-                ) : null}
-                {!isOwner && s.status === "DRAFT" && user.permissions?.["settlements.approveOwn"] ? (
-                  <Button size="sm" className="bg-pole hover:bg-pole/80 text-ivory" onClick={() => act(s, "approve", "Liquidación aprobada (permiso propio)")}>
-                    <BadgeCheck className="mr-1 h-3 w-3" /> Aprobar (permiso propio)
-                  </Button>
-                ) : null}
-                {isOwner && s.status === "APPROVED" ? (
-                  <PayDialog settlement={s} onPaid={() => q.reload()} />
-                ) : null}
+                  {isOwner && s.status === "DRAFT" ? (
+                    <Button size="sm" className="bg-pole hover:bg-pole/80 text-ivory" onClick={() => act(() => approveSettlement(s.id, user.name, false), "Liquidación aprobada")}>
+                      <BadgeCheck className="mr-1 h-3 w-3" /> Aprobar
+                    </Button>
+                  ) : null}
+                  {!isOwner && s.status === "DRAFT" && canApproveOwn ? (
+                    <Button size="sm" className="bg-pole hover:bg-pole/80 text-ivory" onClick={() => act(() => approveSettlement(s.id, user.name, true), "Liquidación aprobada (permiso propio)")}>
+                      <BadgeCheck className="mr-1 h-3 w-3" /> Aprobar (permiso propio)
+                    </Button>
+                  ) : null}
+                  {isOwner && s.status === "APPROVED" ? (
+                    <PayDialog settlement={s} onPaid={() => setTick((n) => n + 1)} />
+                  ) : null}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
-      ) : null}
+      )}
 
       {newOpen ? (
         <NewSettlementDialog
           onClose={() => setNewOpen(false)}
-          onCreated={() => { setNewOpen(false); q.reload(); toast({ title: "Borrador creado", description: "Revísalo, apruébalo y luego registra el pago." }); }}
+          onCreated={() => { setNewOpen(false); setTick((n) => n + 1); toast({ title: "Borrador creado", description: "Revísalo, apruébalo y luego registra el pago." }); }}
         />
       ) : null}
 
-      {detail ? (
+      {detailSettlement ? (
         <Dialog open onOpenChange={(o) => (o ? undefined : setDetail(null))}>
           <DialogContent className="max-h-90 overflow-y-auto nice-scroll sm:max-w-2xl">
-            <DialogHeader><DialogTitle>Detalle · {detail.code}</DialogTitle></DialogHeader>
+            <DialogHeader><DialogTitle>Detalle · {detailSettlement.code}</DialogTitle></DialogHeader>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -147,7 +164,7 @@ export function SettlementsView({ user }: { user: SessionUser }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {detail.items.map((it, i) => (
+                {detailSettlement.items.map((it, i) => (
                   <TableRow key={i}>
                     <TableCell className="text-sm">{it.itemType === "COMMISSION" ? "Comisión" : it.itemType === "ADVANCE" ? "Anticipo" : it.itemType === "REFUND" ? "Devolución" : "Ajuste"}</TableCell>
                     <TableCell className="text-sm text-ink-soft">{it.label}</TableCell>
@@ -159,29 +176,19 @@ export function SettlementsView({ user }: { user: SessionUser }) {
                 <TableRow>
                   <TableCell className="font-bold">Total</TableCell>
                   <TableCell />
-                  <TableCell className="text-right font-display text-lg font-bold">{cop(detail.totalAmount)}</TableCell>
+                  <TableCell className="text-right font-display text-lg font-bold">{cop(detailSettlement.totalAmount)}</TableCell>
                 </TableRow>
               </TableBody>
             </Table>
-            {detail.notes ? <div className="mt-2 text-sm text-ink-soft">Notas: {detail.notes}</div> : null}
+            {detailSettlement.notes ? <div className="mt-2 text-sm text-ink-soft">Notas: {detailSettlement.notes}</div> : null}
           </DialogContent>
         </Dialog>
       ) : null}
     </div>
   );
-
-  async function act(s: SettlementRow, action: "approve" | "pay", okMsg: string, extra?: Record<string, unknown>) {
-    try {
-      await api(`/api/settlements/${s.id}/${action}`, { method: "POST", body: JSON.stringify(extra ?? {}) });
-      toast({ title: okMsg });
-      q.reload();
-    } catch (err) {
-      toast({ title: "Acción rechazada", description: err instanceof Error ? err.message : "Error", variant: "destructive" });
-    }
-  }
 }
 
-function PayDialog({ settlement, onPaid }: { settlement: SettlementRow; onPaid: () => void }) {
+function PayDialog({ settlement, onPaid }: { settlement: ReturnType<typeof getDB>["settlements"][number]; onPaid: () => void }) {
   const [method, setMethod] = useState("CASH");
   const [ref, setRef] = useState("");
   const [busy, setBusy] = useState(false);
@@ -190,7 +197,7 @@ function PayDialog({ settlement, onPaid }: { settlement: SettlementRow; onPaid: 
   async function pay() {
     setBusy(true);
     try {
-      await api(`/api/settlements/${settlement.id}/pay`, { method: "POST", body: JSON.stringify({ method, externalRef: ref || null }) });
+      paySettlement(settlement.id, method, ref || null, "Propietario");
       toast({ title: "Liquidación pagada", description: `${settlement.code} · las comisiones incluidas quedaron pagadas.` });
       setOpen(false);
       onPaid();
@@ -233,18 +240,16 @@ function PayDialog({ settlement, onPaid }: { settlement: SettlementRow; onPaid: 
 }
 
 function NewSettlementDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
-  const barbersQ = useData<{ barbers: Array<{ id: string; name: string }> }>("/api/commissions/config");
+  const db = getDB();
   const [barberId, setBarberId] = useState("");
-  const commissionsQ = useData<{ commissions: CommissionLite[] }>(barberId ? `/api/commissions?barberId=${barberId}&status=PENDING_PAYMENT` : null, [barberId]);
-  const adjustmentsQ = useData<{ adjustments: AdjustmentLite[] }>(barberId ? `/api/adjustments?barberId=${barberId}&status=PENDING` : null, [barberId]);
   const [selCommissions, setSelCommissions] = useState<Set<string>>(new Set());
   const [selAdjustments, setSelAdjustments] = useState<Set<string>>(new Set());
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const commissions = commissionsQ.data?.commissions ?? [];
-  const adjustments = (adjustmentsQ.data?.adjustments ?? []).filter((a) => a.status === "PENDING");
+  const commissions = db.commissions.filter((c) => c.barberId === barberId && c.status === "PENDING_PAYMENT");
+  const adjustments = db.adjustments.filter((a) => a.barberId === barberId && a.status === "PENDING");
 
   const totals = useMemo(() => {
     const cs = commissions.filter((c) => selCommissions.has(c.id));
@@ -265,17 +270,7 @@ function NewSettlementDialog({ onClose, onCreated }: { onClose: () => void; onCr
     setBusy(true);
     setErr(null);
     try {
-      await api("/api/settlements", {
-        method: "POST",
-        body: JSON.stringify({
-          barberId,
-          commissionIds: Array.from(selCommissions),
-          adjustmentIds: Array.from(selAdjustments),
-          notes: notes || null,
-          periodStart: null,
-          periodEnd: null,
-        }),
-      });
+      createSettlement(barberId, Array.from(selCommissions), Array.from(selAdjustments), notes || null, "Propietario");
       onCreated();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Error");
@@ -293,7 +288,7 @@ function NewSettlementDialog({ onClose, onCreated }: { onClose: () => void; onCr
           <Select value={barberId} onValueChange={(v) => { setBarberId(v); setSelCommissions(new Set()); setSelAdjustments(new Set()); }}>
             <SelectTrigger><SelectValue placeholder="Elegir barbero" /></SelectTrigger>
             <SelectContent>
-              {(barbersQ.data?.barbers ?? []).map((b) => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
+              {db.barbers.map((b) => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
@@ -306,14 +301,17 @@ function NewSettlementDialog({ onClose, onCreated }: { onClose: () => void; onCr
                 <div className="rounded-lg border border-dashed border-ink/15 px-3 py-4 text-sm text-ink-soft">Sin comisiones pendientes.</div>
               ) : (
                 <div className="grid max-h-56 gap-1 overflow-y-auto pr-1 nice-scroll">
-                  {commissions.map((c) => (
-                    <label key={c.id} className="flex cursor-pointer items-center gap-2 rounded-lg border border-ink/10 bg-cream px-3 py-2 text-sm">
-                      <Checkbox checked={selCommissions.has(c.id)} onCheckedChange={() => toggle(selCommissions, c.id, setSelCommissions)} />
-                      <span className="font-medium">{c.appointment.code}</span>
-                      <span className="text-ink-soft">{c.appointment.service.name}</span>
-                      <span className="ml-auto font-bold tabular-nums">{cop(c.calculatedAmount)}</span>
-                    </label>
-                  ))}
+                  {commissions.map((c) => {
+                    const appt = db.appointments.find((a) => a.id === c.appointmentId);
+                    return (
+                      <label key={c.id} className="flex cursor-pointer items-center gap-2 rounded-lg border border-ink/10 bg-cream px-3 py-2 text-sm">
+                        <Checkbox checked={selCommissions.has(c.id)} onCheckedChange={() => toggle(selCommissions, c.id, setSelCommissions)} />
+                        <span className="font-medium">{appt?.code}</span>
+                        <span className="text-ink-soft">{c.snapshot.serviceName}</span>
+                        <span className="ml-auto font-bold tabular-nums">{cop(c.calculatedAmount)}</span>
+                      </label>
+                    );
+                  })}
                 </div>
               )}
             </div>

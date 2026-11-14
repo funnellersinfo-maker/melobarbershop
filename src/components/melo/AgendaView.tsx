@@ -1,18 +1,21 @@
 "use client";
-// Agenda interna: calendario del día por barbero, detalle con acciones del flujo
-// (confirmar → atención → completar), reprogramación, nueva cita manual y
-// registro de pagos. Público y manual comparten validaciones (requisito F).
-import { useMemo, useState } from "react";
-import { api, useData } from "@/lib/api";
+// Agenda compartida: día por barbero, flujo completo del servicio, pagos,
+// nueva cita manual y Excel de citas. Cliente puro (localStorage).
+import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { cop } from "@/lib/money";
 import {
-  DIAS, MESES, dateKeyInBogota, timeHMInBogota, partsInBogota, fmtDateLong, addDaysKey, pad2,
+  DIAS, MESES, dateKeyInBogota, timeHMInBogota, partsInBogota, fmtDateLong, addDaysKey,
 } from "@/lib/time";
-import type { SessionUser } from "@/components/melo/LoginView";
 import {
-  StatusBadge, Chip, SectionTitle, EmptyState, LoadingBlock, ErrorBlock, Money, METHOD_LABEL,
-} from "@/components/melo/ui";
+  getDB, mutateDB, type SessionUser, type Appointment,
+} from "@/lib/store";
+import {
+  changeStatus, completeAppointment, rescheduleAppointment, registerPayment, appointmentFinancial,
+  BizError, freeSlotsForBarber,
+} from "@/lib/engines/booking";
+import { StatusBadge, Chip, SectionTitle, EmptyState, Money, METHOD_LABEL } from "@/components/melo/ui";
+import { exportAppointmentsExcel } from "@/lib/excel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -23,69 +26,78 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast, useToast } from "@/hooks/use-toast";
 import {
-  CalendarDays, ChevronLeft, ChevronRight, Plus, Phone, User, Scissors, Wallet, Clock, CircleCheck, Ban, UserX, CalendarClock, RefreshCw, BadgePercent, ChevronDown,
+  CalendarDays, ChevronLeft, ChevronRight, Plus, Phone, User, Scissors, Wallet, Clock,
+  CircleCheck, Ban, UserX, CalendarClock, RefreshCw, BadgePercent, FileDown,
 } from "lucide-react";
-
-export type ApptRow = {
-  id: string;
-  code: string;
-  status: string;
-  origin: "PUBLIC" | "MANUAL";
-  startTime: string;
-  endTime: string;
-  clientName: string;
-  clientPhone: string | null;
-  clientEmail: string | null;
-  notes: string | null;
-  cancelReason: string | null;
-  completedAt: string | null;
-  barber: { id: string; name: string };
-  service: { id: string; name: string; durationMin: number };
-  creator: { id: string | null; name: string };
-  priceSnapshot: number;
-  discount: number;
-  financial: { pagado: number; pendiente: number; commission: { status: string; amount: number; configured: boolean } | null } | null;
-};
-
-type Catalog = {
-  services: Array<{ id: string; name: string; description: string | null; price: number; durationMin: number }>;
-  barbers: Array<{ id: string; name: string }>;
-};
 
 export function AgendaView({ user }: { user: SessionUser }) {
   const [date, setDate] = useState(dateKeyInBogota(new Date()));
-  const apptQ = useData<{ appointments: ApptRow[] }>(`/api/appointments?date=${date}`, [date]);
-  const catalogQ = useData<Catalog>("/api/public/catalog");
+  const [tick, setTick] = useState(0);
   const [barberFilter, setBarberFilter] = useState<string>("ALL");
-  const [selected, setSelected] = useState<ApptRow | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [newOpen, setNewOpen] = useState(false);
   const isOwner = user.role === "OWNER";
 
-  const barbers = catalogQ.data?.barbers ?? [];
+  useEffect(() => {
+    const h = () => setTick((n) => n + 1);
+    window.addEventListener("melo:db-changed", h);
+    return () => window.removeEventListener("melo:db-changed", h);
+  }, []);
+
+  const db = getDB();
+  const barbers = isOwner ? db.barbers.filter((b) => b.active) : db.barbers.filter((b) => b.id === user.id);
+  const dayStart = new Date(`${date}T00:00:00-05:00`).toISOString();
+  const dayEnd = new Date(new Date(`${date}T00:00:00-05:00`).getTime() + 24 * 3600 * 1000).toISOString();
+  const dayAppointments = useMemo(
+    () => db.appointments.filter((a) => a.startTime >= dayStart && a.startTime < dayEnd),
+    [tick, date, db.appointments.length]
+  );
+
   const byBarber = useMemo(() => {
-    const map = new Map<string, ApptRow[]>();
+    const map = new Map<string, Appointment[]>();
     for (const b of barbers) map.set(b.id, []);
-    for (const a of apptQ.data?.appointments ?? []) {
-      if (!map.has(a.barber.id)) map.set(a.barber.id, []);
-      map.get(a.barber.id)!.push(a);
+    for (const a of dayAppointments) {
+      if (!map.has(a.barberId)) map.set(a.barberId, []);
+      map.get(a.barberId)!.push(a);
     }
     for (const list of map.values()) list.sort((x, y) => x.startTime.localeCompare(y.startTime));
     return map;
-  }, [apptQ.data, barbers]);
+  }, [dayAppointments, barbers]);
 
   const shownBarbers = barberFilter === "ALL" ? barbers : barbers.filter((b) => b.id === barberFilter);
   const dow = new Date(`${date}T12:00:00-05:00`).getUTCDay();
   const p = partsInBogota(new Date(`${date}T12:00:00-05:00`));
 
+  function exportExcel() {
+    const rows = dayAppointments.map((a) => {
+      const fin = appointmentFinancial(db, a.id);
+      const barber = db.barbers.find((b) => b.id === a.barberId);
+      const service = db.services.find((s) => s.id === a.serviceId);
+      return {
+        fecha: date, hora: timeHMInBogota(new Date(a.startTime)), cita: a.code, cliente: a.clientName,
+        telefono: a.clientPhone ?? "", barbero: barber?.name ?? "", servicio: service?.name ?? "",
+        estado: a.status, origen: a.origin === "PUBLIC" ? "Web" : "Manual",
+        precio: a.priceSnapshot, descuento: a.discount, neto: fin.net, pagado: fin.pagado, pendiente: fin.pendiente,
+      };
+    });
+    exportAppointmentsExcel(rows, date, date);
+    toast({ title: "Excel generado", description: `Citas del ${date}.` });
+  }
+
   return (
     <div>
       <SectionTitle
-        title="Agenda"
-        sub="Calendario compartido: reservas web y citas manuales en la misma base con las mismas validaciones."
+        title={isOwner ? "Agenda" : "Mi agenda"}
+        sub="Calendario compartido: reservas web y citas manuales con las mismas validaciones. Confirma el flujo del servicio y registra el pago aquí."
         right={
-          <Button onClick={() => setNewOpen(true)} className="bg-melo text-ivory hover:bg-melo-dark">
-            <Plus className="mr-1 h-4 w-4" /> Nueva cita manual
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={exportExcel} className="border-brass/50 text-brass-dark hover:bg-brass/10">
+              <FileDown className="mr-1 h-4 w-4" /> Excel del día
+            </Button>
+            <Button onClick={() => setNewOpen(true)} className="bg-melo text-ivory hover:bg-melo-dark">
+              <Plus className="mr-1 h-4 w-4" /> Nueva cita manual
+            </Button>
+          </div>
         }
       />
 
@@ -98,60 +110,60 @@ export function AgendaView({ user }: { user: SessionUser }) {
           </div>
           <Button variant="ghost" size="icon" onClick={() => setDate(addDaysKey(date, 1))} aria-label="Día siguiente"><ChevronRight className="h-4 w-4" /></Button>
         </div>
-        <Input
-          type="date"
-          value={date}
-          onChange={(e) => e.target.value && setDate(e.target.value)}
-          className="w-40"
-        />
+        <Input type="date" value={date} onChange={(e) => e.target.value && setDate(e.target.value)} className="w-40" />
         <Button variant="outline" onClick={() => setDate(dateKeyInBogota(new Date()))} className="border-ink/15">Hoy</Button>
-        <Select value={barberFilter} onValueChange={setBarberFilter}>
-          <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="ALL">Todos los barberos</SelectItem>
-            {barbers.map((b) => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
-          </SelectContent>
-        </Select>
+        {isOwner ? (
+          <Select value={barberFilter} onValueChange={setBarberFilter}>
+            <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">Todos los barberos</SelectItem>
+              {barbers.map((b) => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        ) : null}
       </div>
 
-      {apptQ.loading ? <LoadingBlock label="Cargando agenda…" /> : null}
-      {apptQ.error ? <ErrorBlock message={apptQ.error} onRetry={apptQ.reload} /> : null}
-
-      {apptQ.data ? (
-        shownBarbers.length === 0 ? (
-          <EmptyState title="Sin barberos activos" sub="Crea barberos desde Equipo (panel del propietario)." />
-        ) : (
-          <div className="grid gap-4 lg:grid-cols-3">
-            {shownBarbers.map((b) => {
-              const list = byBarber.get(b.id) ?? [];
-              const isSelf = b.id === user.id;
-              return (
-                <div key={b.id} className={cn("rounded-2xl border bg-ivory p-4", isSelf ? "border-brass/60 shadow-sm" : "border-ink/10")}>
-                  <div className="mb-3 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
+      {shownBarbers.length === 0 ? (
+        <EmptyState title="Sin barberos activos" sub={isOwner ? "Crea barberos desde Equipo." : "Consulta con el propietario."} />
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-3">
+          {shownBarbers.map((b) => {
+            const list = byBarber.get(b.id) ?? [];
+            const isSelf = b.id === user.id;
+            return (
+              <div key={b.id} className={cn("rounded-2xl border bg-ivory p-4", isSelf ? "border-brass/60 shadow-sm" : "border-ink/10")}>
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {b.photo ? (
+                      <img src={b.photo} alt={b.name} className="h-9 w-9 rounded-full object-cover ring-2 ring-brass/40" />
+                    ) : (
                       <span className="flex h-9 w-9 items-center justify-center rounded-full bg-brass/15 font-display text-sm font-bold text-brass-dark">
                         {b.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}
                       </span>
-                      <div>
-                        <div className="text-sm font-semibold">{b.name}{isSelf ? " (tú)" : ""}</div>
-                        <div className="text-[11px] text-ink-soft">{list.length} cita(s)</div>
-                      </div>
+                    )}
+                    <div>
+                      <div className="text-sm font-semibold">{b.name}{isSelf ? " (tú)" : ""}</div>
+                      <div className="text-[11px] text-ink-soft">{list.length} cita(s)</div>
                     </div>
-                    <Chip><Clock className="h-3 w-3" /> {list.filter((a) => a.status === "COMPLETED").length} hechas</Chip>
                   </div>
-                  {list.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-ink/15 px-3 py-6 text-center text-sm text-ink-soft">Libre todo el día</div>
-                  ) : (
-                    <div className="flex max-h-105 flex-col gap-2 overflow-y-auto pr-1 nice-scroll">
-                      {list.map((a) => (
+                  <Chip><Clock className="h-3 w-3" /> {list.filter((a) => a.status === "COMPLETED").length} hechas</Chip>
+                </div>
+                {list.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-ink/15 px-3 py-6 text-center text-sm text-ink-soft">Libre todo el día</div>
+                ) : (
+                  <div className="flex max-h-105 flex-col gap-2 overflow-y-auto pr-1 nice-scroll">
+                    {list.map((a) => {
+                      const fin = appointmentFinancial(db, a.id);
+                      const service = db.services.find((s) => s.id === a.serviceId);
+                      return (
                         <button
                           key={a.id}
-                          onClick={() => setSelected(a)}
+                          onClick={() => setSelectedId(a.id)}
                           className={cn(
                             "w-full rounded-xl border p-3 text-left transition hover:shadow-md",
                             a.status === "COMPLETED" ? "border-good/40 bg-good/5"
                               : a.status === "CANCELLED" || a.status === "NO_SHOW" ? "border-ink/10 bg-cream/60 opacity-75"
-                              : "border-ink/15 bg-cream"
+                                : "border-ink/15 bg-cream"
                           )}
                         >
                           <div className="flex items-center justify-between gap-2">
@@ -159,46 +171,45 @@ export function AgendaView({ user }: { user: SessionUser }) {
                             <StatusBadge status={a.status} />
                           </div>
                           <div className="mt-1 truncate text-sm text-ink-soft">
-                            {a.clientName} · {a.service.name}
+                            {a.clientName} · {service?.name}
                           </div>
                           <div className="mt-1 flex items-center gap-2">
                             <Chip>{a.origin === "PUBLIC" ? "Web" : "Manual"}</Chip>
-                            {a.financial ? (
-                              a.financial.pendiente > 0 ? (
-                                <Chip className="border-warn/40 text-warn">Falta {cop(a.financial.pendiente)}</Chip>
+                            {a.status === "COMPLETED" ? (
+                              fin.pendiente > 0 ? (
+                                <Chip className="border-warn/40 text-warn">Falta {cop(fin.pendiente)}</Chip>
                               ) : (
                                 <Chip className="border-good/40 text-good">Pagado</Chip>
                               )
                             ) : null}
                           </div>
                         </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )
-      ) : null}
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
-      {selected ? (
+      {selectedId ? (
         <AppointmentDetail
-          apptId={selected.id}
+          apptId={selectedId}
           user={user}
-          onClose={() => setSelected(null)}
-          onChanged={() => { apptQ.reload(); }}
-          catalog={catalogQ.data}
+          onClose={() => setSelectedId(null)}
         />
       ) : null}
 
-      <NewAppointmentDialog
-        open={newOpen}
-        onOpenChange={setNewOpen}
-        user={user}
-        catalog={catalogQ.data}
-        onCreated={() => { apptQ.reload(); setNewOpen(false); toast({ title: "Cita creada", description: "La cita quedó registrada en la agenda." }); }}
-      />
+      {newOpen ? (
+        <NewAppointmentDialog
+          open={newOpen}
+          onOpenChange={setNewOpen}
+          user={user}
+          onCreated={() => { setNewOpen(false); setTick((n) => n + 1); toast({ title: "Cita creada", description: "La cita quedó registrada en la agenda." }); }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -206,31 +217,28 @@ export function AgendaView({ user }: { user: SessionUser }) {
 // ============================== DETALLE ==============================
 
 export function AppointmentDetail({
-  apptId, user, onClose, onChanged, catalog,
+  apptId, user, onClose,
 }: {
   apptId: string;
   user: SessionUser;
   onClose: () => void;
-  onChanged: () => void;
-  catalog: Catalog | null;
 }) {
-  const detailQ = useData<{ appointments: ApptRow[] }>(`/api/appointments?from=2000-01-01&to=2999-01-01`, []);
-  const appt = detailQ.data?.appointments.find((a) => a.id === apptId) ?? null;
-
+  const [, force] = useState(0);
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<"view" | "reschedule">("view");
   const [discount, setDiscount] = useState("");
-  const [cancelReason, setCancelReason] = useState("");
   const [payOpen, setPayOpen] = useState(false);
   const { toast } = useToast();
 
-  async function act(body: Record<string, unknown>, okMsg: string) {
+  const db = getDB();
+  const appt = db.appointments.find((a) => a.id === apptId) ?? null;
+
+  async function act(fn: () => void, okMsg: string) {
     setBusy(true);
     try {
-      await api(`/api/appointments/${apptId}`, { method: "PATCH", body: JSON.stringify(body) });
+      fn();
       toast({ title: okMsg });
-      await detailQ.reload();
-      onChanged();
+      force((n) => n + 1);
     } catch (err) {
       toast({ title: "Acción rechazada", description: err instanceof Error ? err.message : "Error", variant: "destructive" });
       throw err;
@@ -239,31 +247,21 @@ export function AppointmentDetail({
     }
   }
 
-  if (detailQ.loading)
+  if (!appt) {
     return (
-      <Sheet open>
+      <Sheet open onOpenChange={(o) => (o ? undefined : onClose())}>
         <SheetContent>
-          <SheetHeader className="sr-only">
-            <SheetTitle>Cargando cita</SheetTitle>
-          </SheetHeader>
-          <LoadingBlock />
+          <SheetHeader className="sr-only"><SheetTitle>Cita no encontrada</SheetTitle></SheetHeader>
+          <div className="p-6 text-sm text-ink-soft">Cita no encontrada.</div>
         </SheetContent>
       </Sheet>
     );
-  if (!appt)
-    return (
-      <Sheet open>
-        <SheetContent>
-          <SheetHeader className="sr-only">
-            <SheetTitle>Cita no encontrada</SheetTitle>
-          </SheetHeader>
-          <ErrorBlock message="Cita no encontrada" onRetry={detailQ.reload} />
-        </SheetContent>
-      </Sheet>
-    );
+  }
 
-  const canManage = user.role === "OWNER" || appt.barber.id === user.id;
-  const canSeeFinancial = !!appt.financial;
+  const barber = db.barbers.find((b) => b.id === appt.barberId);
+  const service = db.services.find((s) => s.id === appt.serviceId);
+  const canManage = user.role === "OWNER" || appt.barberId === user.id;
+  const fin = appt.status === "COMPLETED" ? appointmentFinancial(db, apptId) : null;
   const net = appt.priceSnapshot - appt.discount;
 
   return (
@@ -279,15 +277,15 @@ export function AppointmentDetail({
 
         <div className="mt-4 grid gap-4">
           <div className="rounded-xl border border-ink/10 bg-cream p-4">
-            <div className="font-display text-lg font-bold">{appt.service.name}</div>
+            <div className="font-display text-lg font-bold">{service?.name}</div>
             <div className="mt-1 text-sm text-ink-soft">
-              {fmtDateLong(new Date(appt.startTime))} · {timeHMInBogota(new Date(appt.startTime))}–{timeHMInBogota(new Date(appt.endTime))} ({appt.service.durationMin} min)
+              {fmtDateLong(new Date(appt.startTime))} · {timeHMInBogota(new Date(appt.startTime))}–{timeHMInBogota(new Date(appt.endTime))} ({service?.durationMin} min)
             </div>
             <div className="mt-2 flex items-center gap-2 text-sm">
               <User className="h-4 w-4 text-brass" /> {appt.clientName}
               {appt.clientPhone ? <><span className="text-ink/30">|</span><Phone className="h-4 w-4 text-brass" /> {appt.clientPhone}</> : null}
             </div>
-            <div className="mt-1 text-sm text-ink-soft">Barbero: {appt.barber.name} · Creada por: {appt.creator.name}</div>
+            <div className="mt-1 text-sm text-ink-soft">Barbero: {barber?.name}</div>
             {appt.notes ? <div className="mt-2 rounded-lg bg-ivory p-2 text-sm">Nota: {appt.notes}</div> : null}
             {appt.cancelReason ? <div className="mt-2 rounded-lg bg-melo/10 p-2 text-sm text-melo-dark">Motivo de cancelación: {appt.cancelReason}</div> : null}
           </div>
@@ -303,39 +301,38 @@ export function AppointmentDetail({
             </div>
           </div>
 
-          {canSeeFinancial ? (
+          {fin ? (
             <div className="rounded-xl border border-brass/40 bg-brass/5 p-4">
               <div className="mb-2 flex items-center gap-2 font-semibold"><Wallet className="h-4 w-4 text-brass-dark" /> Estado financiero</div>
               <div className="grid grid-cols-3 gap-2 text-center">
                 <div><div className="text-[11px] text-ink-soft">Neto</div><div className="font-bold">{cop(net)}</div></div>
-                <div><div className="text-[11px] text-ink-soft">Pagado</div><div className="font-bold text-good">{cop(appt.financial!.pagado)}</div></div>
-                <div><div className="text-[11px] text-ink-soft">Pendiente</div><div className="font-bold text-warn">{cop(appt.financial!.pendiente)}</div></div>
+                <div><div className="text-[11px] text-ink-soft">Pagado</div><div className="font-bold text-good">{cop(fin.pagado)}</div></div>
+                <div><div className="text-[11px] text-ink-soft">Pendiente</div><div className="font-bold text-warn">{cop(fin.pendiente)}</div></div>
               </div>
-              {appt.financial!.commission ? (
+              {fin.commission ? (
                 <div className="mt-3 border-t border-brass/30 pt-2 text-sm">
-                  Comisión {appt.financial!.commission.configured ? "" : "(sin regla al completar) "}:{" "}
-                  <b>{cop(appt.financial!.commission.amount)}</b>{" · "}
-                  <span className="text-ink-soft">{appt.financial!.commission.status === "PAID" ? "pagada" : appt.financial!.commission.status === "PENDING_CONFIG" ? "por definir" : "pendiente de liquidar"}</span>
+                  Comisión {fin.commission.configured ? "" : "(sin regla al completar) "}:{" "}
+                  <b>{cop(fin.commission.amount)}</b>{" · "}
+                  <span className="text-ink-soft">{fin.commission.status === "PAID" ? "pagada" : fin.commission.status === "PENDING_CONFIG" ? "por definir" : "pendiente de liquidar"}</span>
                 </div>
               ) : null}
             </div>
           ) : null}
 
-          {/* acciones */}
           {canManage ? (
             <div className="grid gap-2">
               {appt.status === "RESERVED" ? (
                 <>
-                  <Button disabled={busy} onClick={() => act({ action: "status", to: "CONFIRMED" }, "Cita confirmada")} className="bg-pole hover:bg-pole/80 text-ivory">
+                  <Button disabled={busy} onClick={() => act(() => changeStatus(apptId, "CONFIRMED", user.name), "Cita confirmada")} className="bg-pole hover:bg-pole/80 text-ivory">
                     <CircleCheck className="mr-2 h-4 w-4" /> Confirmar cita
                   </Button>
                   <div className="grid grid-cols-2 gap-2">
                     <Button variant="outline" disabled={busy} onClick={() => setMode("reschedule")} className="border-ink/20">
                       <CalendarClock className="mr-2 h-4 w-4" /> Reprogramar
                     </Button>
-                    <CancelDialog disabled={busy} onConfirm={(reason) => act({ action: "status", to: "CANCELLED", reason }, "Cita cancelada")} />
+                    <CancelDialog disabled={busy} onConfirm={(reason) => act(() => changeStatus(apptId, "CANCELLED", user.name, reason), "Cita cancelada")} />
                   </div>
-                  <Button variant="outline" disabled={busy} onClick={() => act({ action: "status", to: "NO_SHOW" }, "Marcada como ausencia")} className="border-ink/20 text-ink-soft">
+                  <Button variant="outline" disabled={busy} onClick={() => act(() => changeStatus(apptId, "NO_SHOW", user.name), "Marcada como ausencia")} className="border-ink/20 text-ink-soft">
                     <UserX className="mr-2 h-4 w-4" /> Marcar ausencia del cliente
                   </Button>
                 </>
@@ -343,16 +340,16 @@ export function AppointmentDetail({
 
               {appt.status === "CONFIRMED" ? (
                 <>
-                  <Button disabled={busy} onClick={() => act({ action: "status", to: "IN_ATTENTION" }, "Cita en atención")} className="bg-warn hover:bg-warn/80 text-ivory">
+                  <Button disabled={busy} onClick={() => act(() => changeStatus(apptId, "IN_ATTENTION", user.name), "Cita en atención")} className="bg-warn hover:bg-warn/80 text-ivory">
                     <Scissors className="mr-2 h-4 w-4" /> Iniciar atención
                   </Button>
                   <div className="grid grid-cols-2 gap-2">
                     <Button variant="outline" disabled={busy} onClick={() => setMode("reschedule")} className="border-ink/20">
                       <CalendarClock className="mr-2 h-4 w-4" /> Reprogramar
                     </Button>
-                    <CancelDialog disabled={busy} onConfirm={(reason) => act({ action: "status", to: "CANCELLED", reason }, "Cita cancelada")} />
+                    <CancelDialog disabled={busy} onConfirm={(reason) => act(() => changeStatus(apptId, "CANCELLED", user.name, reason), "Cita cancelada")} />
                   </div>
-                  <Button variant="outline" disabled={busy} onClick={() => act({ action: "status", to: "NO_SHOW" }, "Marcada como ausencia")} className="border-ink/20 text-ink-soft">
+                  <Button variant="outline" disabled={busy} onClick={() => act(() => changeStatus(apptId, "NO_SHOW", user.name), "Marcada como ausencia")} className="border-ink/20 text-ink-soft">
                     <UserX className="mr-2 h-4 w-4" /> Marcar ausencia del cliente
                   </Button>
                 </>
@@ -373,7 +370,7 @@ export function AppointmentDetail({
                     disabled={busy}
                     className="mt-3 w-full bg-good hover:bg-good/85 text-ivory"
                     onClick={() =>
-                      act({ action: "complete", discount: Number(discount || 0) }, "Servicio completado. Ya puedes registrar el pago.")
+                      act(() => completeAppointment(apptId, Number(discount || 0), user.name), "Servicio completado. Ya puedes registrar el pago.")
                         .then(() => setPayOpen(true))
                         .catch(() => undefined)
                     }
@@ -381,12 +378,12 @@ export function AppointmentDetail({
                     <CircleCheck className="mr-2 h-4 w-4" /> Completar y generar comisión
                   </Button>
                   <p className="mt-2 text-xs text-ink-soft">
-                    Al completar se guarda una copia inmutable de las condiciones económicas vigentes (regla de comisión, precio y descuento). Cambios futuros de tarifas no alteran este registro.
+                    Al completar se guarda una copia inmutable de las condiciones económicas vigentes. Cambios futuros de tarifas no alteran este registro.
                   </p>
                 </div>
               ) : null}
 
-              {appt.status === "COMPLETED" && canSeeFinancial && appt.financial!.pendiente > 0 ? (
+              {appt.status === "COMPLETED" && fin && fin.pendiente > 0 ? (
                 <Button onClick={() => setPayOpen(true)} className="bg-melo hover:bg-melo-dark text-ivory">
                   <Wallet className="mr-2 h-4 w-4" /> Registrar pago
                 </Button>
@@ -398,14 +395,13 @@ export function AppointmentDetail({
             </div>
           )}
 
-          {mode === "reschedule" && canManage && catalog ? (
+          {mode === "reschedule" && canManage ? (
             <RescheduleForm
               appt={appt}
-              catalog={catalog}
               busy={busy}
               onCancel={() => setMode("view")}
               onSubmit={async (payload) => {
-                await act({ action: "reschedule", ...payload }, "Cita reprogramada");
+                await act(() => rescheduleAppointment(apptId, payload.date, payload.time, payload.barberId, user.name), "Cita reprogramada");
                 setMode("view");
               }}
             />
@@ -414,9 +410,9 @@ export function AppointmentDetail({
 
         {payOpen && appt.status === "COMPLETED" ? (
           <PaymentDialog
-            appt={appt}
+            apptId={apptId}
             onClose={() => setPayOpen(false)}
-            onPaid={() => { setPayOpen(false); detailQ.reload(); onChanged(); }}
+            onPaid={() => { setPayOpen(false); force((n) => n + 1); }}
           />
         ) : null}
       </SheetContent>
@@ -436,9 +432,7 @@ function CancelDialog({ disabled, onConfirm }: { disabled: boolean; onConfirm: (
         </Button>
       </DialogTrigger>
       <DialogContent>
-        <DialogHeader>
-          <DialogTitle>¿Cancelar esta cita?</DialogTitle>
-        </DialogHeader>
+        <DialogHeader><DialogTitle>¿Cancelar esta cita?</DialogTitle></DialogHeader>
         <div className="grid gap-2">
           <Label>Motivo (queda en auditoría)</Label>
           <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ej: el cliente lo pidió" />
@@ -459,18 +453,20 @@ function CancelDialog({ disabled, onConfirm }: { disabled: boolean; onConfirm: (
 }
 
 function RescheduleForm({
-  appt, catalog, busy, onCancel, onSubmit,
+  appt, busy, onCancel, onSubmit,
 }: {
-  appt: ApptRow;
-  catalog: Catalog;
+  appt: Appointment;
   busy: boolean;
   onCancel: () => void;
   onSubmit: (payload: { date: string; time: string; barberId: string }) => Promise<void>;
 }) {
+  const db = getDB();
   const [date, setDate] = useState(dateKeyInBogota(new Date(appt.startTime)));
   const [time, setTime] = useState(timeHMInBogota(new Date(appt.startTime)));
-  const [barberId, setBarberId] = useState(appt.barber.id);
+  const [barberId, setBarberId] = useState(appt.barberId);
   const [err, setErr] = useState<string | null>(null);
+
+  const slots = useMemo(() => freeSlotsForBarber(getDB(), barberId, appt.serviceId, date), [barberId, date]);
 
   return (
     <div className="rounded-xl border border-pole/40 bg-pole/5 p-4">
@@ -489,11 +485,20 @@ function RescheduleForm({
           <Select value={barberId} onValueChange={setBarberId}>
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
-              {catalog.barbers.map((b) => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
+              {db.barbers.filter((b) => b.active).map((b) => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
       </div>
+      {slots.length > 0 ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {slots.slice(0, 12).map((s) => (
+            <button key={s} onClick={() => setTime(s)} className={cn("rounded-lg border px-2 py-1 text-xs tabular-nums", time === s ? "border-melo bg-melo text-ivory" : "border-ink/15 bg-ivory")}>
+              {s}
+            </button>
+          ))}
+        </div>
+      ) : null}
       {err ? <div className="mt-2 rounded bg-melo/10 p-2 text-xs text-melo-dark">{err}</div> : null}
       <div className="mt-3 flex justify-end gap-2">
         <Button variant="outline" onClick={onCancel} disabled={busy}>Cerrar</Button>
@@ -514,31 +519,33 @@ function RescheduleForm({
 
 // ============================== PAGO ==============================
 
-export function PaymentDialog({ appt, onClose, onPaid }: { appt: ApptRow; onClose: () => void; onPaid: () => void }) {
-  const net = appt.priceSnapshot - appt.discount;
-  const pagado = appt.financial?.pagado ?? 0;
+export function PaymentDialog({ apptId, onClose, onPaid }: { apptId: string; onClose: () => void; onPaid: () => void }) {
+  const db = getDB();
+  const appt = db.appointments.find((a) => a.id === apptId);
+  if (!appt) return null;
+  const fin = appointmentFinancial(db, apptId);
+  const net = fin.net;
+  const pagado = fin.pagado;
   const pendiente = Math.max(0, net - pagado);
   const [amount, setAmount] = useState(String(pendiente || ""));
-  const [method, setMethod] = useState("CASH");
+  const [method, setMethod] = useState<"CASH" | "TRANSFER" | "CARD" | "OTHER">("CASH");
   const [externalRef, setExternalRef] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  // idempotencia: un identificador por apertura del diálogo
+  // idempotencia: identificador por apertura del diálogo
   const [reqId] = useState(() => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `pay-${Date.now()}-${Math.random()}`));
 
   async function submit() {
     setBusy(true);
     setErr(null);
     try {
-      await api("/api/payments", {
-        method: "POST",
-        body: JSON.stringify({
-          appointmentId: appt.id,
-          amount: Number(amount),
-          method,
-          externalRef: externalRef || null,
-          clientRequestId: reqId,
-        }),
+      registerPayment({
+        appointmentId: apptId,
+        amount: Number(amount),
+        method,
+        externalRef: externalRef || null,
+        registeredByName: appt ? (db.barbers.find((b) => b.id === appt.barberId)?.name ?? "Panel") : "Panel",
+        registeredById: reqId,
       });
       onPaid();
     } catch (e) {
@@ -551,9 +558,7 @@ export function PaymentDialog({ appt, onClose, onPaid }: { appt: ApptRow; onClos
   return (
     <Dialog open onOpenChange={(o) => (o ? undefined : onClose())}>
       <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Registrar pago · {appt.code}</DialogTitle>
-        </DialogHeader>
+        <DialogHeader><DialogTitle>Registrar pago · {appt.code}</DialogTitle></DialogHeader>
         <div className="grid grid-cols-3 gap-2 rounded-xl bg-cream p-3 text-center text-sm">
           <div><div className="text-[11px] text-ink-soft">Neto</div><b>{cop(net)}</b></div>
           <div><div className="text-[11px] text-ink-soft">Ya pagado</div><b className="text-good">{cop(pagado)}</b></div>
@@ -566,7 +571,7 @@ export function PaymentDialog({ appt, onClose, onPaid }: { appt: ApptRow; onClos
           </div>
           <div className="grid gap-1">
             <Label>Método</Label>
-            <Select value={method} onValueChange={setMethod}>
+            <Select value={method} onValueChange={(v) => setMethod(v as "CASH" | "TRANSFER" | "CARD" | "OTHER")}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 {Object.entries(METHOD_LABEL).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
@@ -581,7 +586,7 @@ export function PaymentDialog({ appt, onClose, onPaid }: { appt: ApptRow; onClos
           ) : null}
           {err ? <div className="rounded-lg bg-melo/10 p-2 text-sm text-melo-dark">{err}</div> : null}
           <p className="text-xs text-ink-soft">
-            El pago se registra una sola vez: la solicitud lleva un identificador único y el servidor impide pasar el valor neto de la cita.
+            El pago se registra una sola vez y no puede superar el valor neto de la cita. Se suma automáticamente a la caja del propietario.
           </p>
         </div>
         <div className="mt-4 flex justify-end gap-2">
@@ -598,15 +603,15 @@ export function PaymentDialog({ appt, onClose, onPaid }: { appt: ApptRow; onClos
 // ============================== NUEVA CITA MANUAL ==============================
 
 export function NewAppointmentDialog({
-  open, onOpenChange, user, catalog, onCreated,
+  open, onOpenChange, user, onCreated,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   user: SessionUser;
-  catalog: Catalog | null;
   onCreated: () => void;
 }) {
   const isOwner = user.role === "OWNER";
+  const db = getDB();
   const [serviceId, setServiceId] = useState("");
   const [barberId, setBarberId] = useState(isOwner ? "" : user.id);
   const [date, setDate] = useState(dateKeyInBogota(new Date()));
@@ -618,10 +623,9 @@ export function NewAppointmentDialog({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const service = catalog?.services.find((s) => s.id === serviceId) ?? null;
   const effectiveBarberId = isOwner ? barberId : user.id;
-  const slotsQ = useData<{ slots: Array<{ time: string }> }>(
-    open && serviceId && effectiveBarberId && date ? `/api/public/slots?serviceId=${serviceId}&date=${date}&barberId=${effectiveBarberId}` : null,
+  const slots = useMemo(
+    () => (open && serviceId && effectiveBarberId ? freeSlotsForBarber(getDB(), effectiveBarberId, serviceId, date) : []),
     [open, serviceId, effectiveBarberId, date]
   );
 
@@ -629,18 +633,19 @@ export function NewAppointmentDialog({
     setBusy(true);
     setErr(null);
     try {
-      await api("/api/appointments", {
-        method: "POST",
-        body: JSON.stringify({
-          barberId: effectiveBarberId,
-          serviceId,
-          date,
-          time,
-          clientName,
-          clientPhone: clientPhone || null,
-          notes: notes || null,
-          allowPastToday: allowPast,
-        }),
+      const { createAppointment } = await import("@/lib/engines/booking");
+      const startMin = (Number(time.split(":")[0]) || 0) * 60 + (Number(time.split(":")[1]) || 0);
+      createAppointment({
+        barberId: effectiveBarberId,
+        serviceId,
+        dateKey: date,
+        startMin,
+        clientName,
+        clientPhone: clientPhone || null,
+        origin: "MANUAL",
+        createdByName: user.name,
+        notes: notes || null,
+        allowPastToday: allowPast,
       });
       onCreated();
       setServiceId(""); setTime(""); setClientName(""); setClientPhone(""); setNotes("");
@@ -656,11 +661,9 @@ export function NewAppointmentDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-90 overflow-y-auto nice-scroll sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>Nueva cita manual</DialogTitle>
-        </DialogHeader>
+        <DialogHeader><DialogTitle>Nueva cita manual</DialogTitle></DialogHeader>
         <p className="text-sm text-ink-soft">
-          Registra citas presenciales, telefónicas u de otros canales. Se validan disponibilidad y solapamientos igual que las reservas web.
+          Registra citas presenciales o telefónicas. Se validan disponibilidad y solapamientos igual que las reservas web.
         </p>
         <div className="mt-2 grid gap-3">
           <div className="grid gap-1 sm:grid-cols-2">
@@ -669,7 +672,7 @@ export function NewAppointmentDialog({
               <Select value={serviceId} onValueChange={(v) => { setServiceId(v); setTime(""); }}>
                 <SelectTrigger><SelectValue placeholder="Elegir" /></SelectTrigger>
                 <SelectContent>
-                  {catalog?.services.map((s) => <SelectItem key={s.id} value={s.id}>{s.name} · {cop(s.price)}</SelectItem>)}
+                  {db.services.filter((s) => s.active).map((s) => <SelectItem key={s.id} value={s.id}>{s.name} · {cop(s.price)}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -678,7 +681,7 @@ export function NewAppointmentDialog({
               <Select value={effectiveBarberId || undefined} onValueChange={setBarberId} disabled={!isOwner}>
                 <SelectTrigger><SelectValue placeholder="Elegir" /></SelectTrigger>
                 <SelectContent>
-                  {catalog?.barbers.map((b) => <SelectItem key={b.id} value={b.id}>{b.name}{b.id === user.id ? " (tú)" : ""}</SelectItem>)}
+                  {db.barbers.filter((b) => b.active).map((b) => <SelectItem key={b.id} value={b.id}>{b.name}{b.id === user.id ? " (tú)" : ""}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -695,17 +698,17 @@ export function NewAppointmentDialog({
             </div>
           </div>
 
-          {slotsQ.data && slotsQ.data.slots.length > 0 ? (
+          {slots.length > 0 ? (
             <div>
-              <div className="mb-1 flex items-center gap-1 text-xs text-ink-soft"><ChevronDown className="h-3 w-3" /> Horas libres sugeridas:</div>
+              <div className="mb-1 text-xs text-ink-soft">Horas libres sugeridas:</div>
               <div className="flex flex-wrap gap-1.5">
-                {slotsQ.data.slots.slice(0, 12).map((s) => (
+                {slots.slice(0, 12).map((s) => (
                   <button
-                    key={s.time}
-                    onClick={() => setTime(s.time)}
-                    className={cn("rounded-lg border px-2 py-1 text-xs tabular-nums", time === s.time ? "border-melo bg-melo text-ivory" : "border-ink/15 bg-ivory hover:border-brass")}
+                    key={s}
+                    onClick={() => setTime(s)}
+                    className={cn("rounded-lg border px-2 py-1 text-xs tabular-nums", time === s ? "border-melo bg-melo text-ivory" : "border-ink/15 bg-ivory hover:border-brass")}
                   >
-                    {s.time}
+                    {s}
                   </button>
                 ))}
               </div>

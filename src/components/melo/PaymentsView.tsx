@@ -1,55 +1,117 @@
 "use client";
-// Pagos y caja del propietario: registro, devoluciones, movimientos y conciliación (requisito D).
-import { useMemo, useState } from "react";
-import { api, useData } from "@/lib/api";
+// Pagos y caja con exportación a Excel del rango filtrado en pantalla.
+import { useEffect, useMemo, useState } from "react";
 import { cop } from "@/lib/money";
 import { timeHMInBogota, fmtDateMedium, dateKeyInBogota } from "@/lib/time";
-import { SectionTitle, LoadingBlock, ErrorBlock, EmptyState, Chip, METHOD_LABEL, PAY_STATUS_META } from "@/components/melo/ui";
+import { getDB, type SessionUser } from "@/lib/store";
+import { appointmentFinancial } from "@/lib/engines/booking";
+import { cashMovements } from "@/lib/engines/finance";
+import { refundPayment, BizError } from "@/lib/engines/booking";
+import { SectionTitle, EmptyState, Chip, METHOD_LABEL, PAY_STATUS_META } from "@/components/melo/ui";
+import { exportPaymentsExcel, exportCashExcel } from "@/lib/excel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "@/hooks/use-toast";
-import { Wallet, RotateCcw, Plus, ArrowDownRight, ArrowUpRight, Landmark } from "lucide-react";
+import { Wallet, RotateCcw, ArrowDownRight, ArrowUpRight, Landmark, FileDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-type PaymentRow = {
-  id: string;
-  appointmentId: string;
-  amount: number;
-  method: string;
-  status: string;
-  refundedAmount: number;
-  externalRef: string | null;
-  notes: string | null;
-  refundReason: string | null;
-  receivedAt: string;
-  appointment: { code: string; clientName: string; priceSnapshot: number; discount: number; service: { name: string }; barber: { id: string; name: string } };
-  registeredBy: { name: string };
-};
+type PaymentRow = ReturnType<typeof buildPaymentRows>[number];
 
-type Movement = { date: string; kind: "INGRESO" | "EGRESO"; concept: string; detail: string; amount: number; source: string; method?: string };
+function inRange(iso: string, from: string, to: string) {
+  const dayStart = (k: string) => new Date(`${k}T00:00:00-05:00`).getTime();
+  const t = new Date(iso).getTime();
+  return t >= dayStart(from) && t < dayStart(to) + 24 * 3600 * 1000;
+}
 
-export function PaymentsView({ user }: { user: { role: string; id: string; name: string } }) {
+function buildPaymentRows(db: ReturnType<typeof getDB>, from: string, to: string, barberId?: string) {
+  return db.payments
+    .filter((p) => inRange(p.receivedAt, from, to))
+    .map((p) => {
+      const appt = db.appointments.find((a) => a.id === p.appointmentId);
+      const barber = appt ? db.barbers.find((b) => b.id === appt.barberId) : undefined;
+      const service = appt ? db.services.find((s) => s.id === appt.serviceId) : undefined;
+      return {
+        id: p.id,
+        appointmentId: p.appointmentId,
+        amount: p.amount,
+        method: p.method,
+        status: p.status,
+        refundedAmount: p.refundedAmount,
+        externalRef: p.externalRef,
+        receivedAt: p.receivedAt,
+        code: appt?.code ?? "?",
+        clientName: appt?.clientName ?? "?",
+        barberName: barber?.name ?? "—",
+        serviceName: service?.name ?? "—",
+        registeredBy: p.registeredByName,
+      };
+    })
+    .filter((r) => (barberId ? r.barberName === (getDB().barbers.find((b) => b.id === barberId)?.name ?? "") : true))
+    .sort((a, b) => b.receivedAt.localeCompare(a.receivedAt));
+}
+
+export function PaymentsView({ user }: { user: SessionUser }) {
   const [from, setFrom] = useState(dateKeyInBogota(new Date()));
   const [to, setTo] = useState(dateKeyInBogota(new Date()));
-  const payQ = useData<{ payments: PaymentRow[] }>(`/api/payments?from=${from}&to=${to}`, [from, to]);
-  const cashQ = useData<{ movements: Movement[]; balance: number }>(`/api/cash?from=${from}&to=${to}`, [from, to]);
+  const [tick, setTick] = useState(0);
   const [refundFor, setRefundFor] = useState<PaymentRow | null>(null);
 
+  useEffect(() => {
+    const h = () => setTick((n) => n + 1);
+    window.addEventListener("melo:db-changed", h);
+    return () => window.removeEventListener("melo:db-changed", h);
+  }, []);
+
+  const db = getDB();
+  const payments = useMemo(() => buildPaymentRows(db, from, to), [tick, from, to]);
+  const { movements, balance } = useMemo(
+    () => cashMovements(db, new Date(`${from}T00:00:00-05:00`), new Date(new Date(`${to}T00:00:00-05:00`).getTime() + 24 * 3600 * 1000)),
+    [tick, from, to]
+  );
+
   const totals = useMemo(() => {
-    const list = payQ.data?.payments ?? [];
-    const cobrado = list.reduce((s, p) => s + (p.amount - p.refundedAmount), 0);
-    const devuelto = list.reduce((s, p) => s + p.refundedAmount, 0);
-    return { n: list.length, cobrado, devuelto };
-  }, [payQ.data]);
+    const cobrado = payments.reduce((s, p) => s + (p.amount - p.refundedAmount), 0);
+    const devuelto = payments.reduce((s, p) => s + p.refundedAmount, 0);
+    return { n: payments.length, cobrado, devuelto };
+  }, [payments]);
+
+  function downloadExcel() {
+    exportPaymentsExcel(
+      payments.map((p) => ({
+        fecha: fmtDateMedium(new Date(p.receivedAt)),
+        hora: timeHMInBogota(new Date(p.receivedAt)),
+        cita: p.code, cliente: p.clientName, barbero: p.barberName, servicio: p.serviceName,
+        monto: p.amount, devuelto: p.refundedAmount, neto: p.amount - p.refundedAmount,
+        metodo: METHOD_LABEL[p.method] ?? p.method,
+        estado: PAY_STATUS_META[p.status]?.label ?? p.status,
+        referencia: p.externalRef ?? "", registro: p.registeredBy,
+      })),
+      from, to
+    );
+    toast({ title: "Excel generado", description: `Pagos del ${from} al ${to}.` });
+  }
+
+  function downloadCashExcel() {
+    exportCashExcel(
+      movements.map((m) => ({
+        fecha: fmtDateMedium(new Date(m.date)),
+        hora: timeHMInBogota(new Date(m.date)),
+        tipo: m.kind, concepto: m.concept, detalle: m.detail,
+        valor: m.kind === "INGRESO" ? m.amount : -m.amount,
+        metodo: m.method ? (METHOD_LABEL[m.method] ?? m.method) : "",
+      })),
+      from, to, balance
+    );
+    toast({ title: "Excel generado", description: `Movimientos de caja del ${from} al ${to}.` });
+  }
 
   return (
     <div>
-      <SectionTitle title="Pagos y caja" sub="El pago se registra aparte de la cita completada. La caja consolida ingresos por pagos y egresos por gastos, anticipos y liquidaciones." />
+      <SectionTitle title="Pagos y caja" sub="El pago se registra aparte de la cita completada. La caja consolida ingresos por pagos y egresos por gastos, anticipos y liquidaciones. Descarga en Excel lo que ves en pantalla." />
       <div className="mb-4 flex flex-wrap items-end gap-2">
         <div className="grid gap-1">
           <Label className="text-xs">Desde</Label>
@@ -59,7 +121,7 @@ export function PaymentsView({ user }: { user: { role: string; id: string; name:
           <Label className="text-xs">Hasta</Label>
           <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-40" />
         </div>
-        <div className="ml-auto flex gap-2 rounded-xl bg-ivory px-4 py-2 text-sm">
+        <div className="ml-auto flex flex-wrap gap-2 rounded-xl bg-ivory px-4 py-2 text-sm">
           <span className="text-ink-soft">Cobrado neto:</span> <b>{cop(totals.cobrado)}</b>
           <span className="text-ink-soft ml-3">Devuelto:</span> <b>{cop(totals.devuelto)}</b>
         </div>
@@ -67,16 +129,19 @@ export function PaymentsView({ user }: { user: { role: string; id: string; name:
 
       <Tabs defaultValue="payments">
         <TabsList className="bg-ivory">
-          <TabsTrigger value="payments">Pagos registrados</TabsTrigger>
+          <TabsTrigger value="payments">Pagos registrados ({payments.length})</TabsTrigger>
           <TabsTrigger value="cash">Movimientos de caja</TabsTrigger>
         </TabsList>
 
         <TabsContent value="payments" className="mt-4">
-          {payQ.loading ? <LoadingBlock /> : payQ.error ? <ErrorBlock message={payQ.error} onRetry={payQ.reload} /> : null}
-          {payQ.data && payQ.data.payments.length === 0 ? (
+          <div className="mb-3 flex justify-end">
+            <Button variant="outline" onClick={downloadExcel} disabled={payments.length === 0} className="border-good/50 text-good hover:bg-good/10">
+              <FileDown className="mr-1 h-4 w-4" /> Descargar Excel (rango en pantalla)
+            </Button>
+          </div>
+          {payments.length === 0 ? (
             <EmptyState title="Sin pagos en el rango" sub="Los pagos se registran desde el detalle de una cita completada." />
-          ) : null}
-          {payQ.data && payQ.data.payments.length > 0 ? (
+          ) : (
             <div className="overflow-x-auto rounded-xl border border-ink/10 bg-ivory">
               <Table>
                 <TableHeader>
@@ -93,16 +158,16 @@ export function PaymentsView({ user }: { user: { role: string; id: string; name:
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {payQ.data.payments.map((p) => (
+                  {payments.map((p) => (
                     <TableRow key={p.id}>
-                      <TableCell className="text-sm">{fmtDateMedium(new Date(p.receivedAt))} {timeHMInBogota(new Date(p.receivedAt))}</TableCell>
-                      <TableCell className="font-medium">{p.appointment.code}</TableCell>
-                      <TableCell>{p.appointment.clientName}</TableCell>
-                      <TableCell className="text-sm text-ink-soft">{p.appointment.barber.name}</TableCell>
+                      <TableCell className="text-sm whitespace-nowrap">{fmtDateMedium(new Date(p.receivedAt))} {timeHMInBogota(new Date(p.receivedAt))}</TableCell>
+                      <TableCell className="font-medium">{p.code}</TableCell>
+                      <TableCell>{p.clientName}</TableCell>
+                      <TableCell className="text-sm text-ink-soft">{p.barberName}</TableCell>
                       <TableCell className="text-right font-semibold tabular-nums">{cop(p.amount)}{p.refundedAmount > 0 ? <span className="block text-xs text-melo-dark">− dev. {cop(p.refundedAmount)}</span> : null}</TableCell>
                       <TableCell><Chip>{METHOD_LABEL[p.method] ?? p.method}</Chip></TableCell>
                       <TableCell>
-                      <span className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]", PAY_STATUS_META[p.status]?.cls ?? "")}>
+                        <span className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]", PAY_STATUS_META[p.status]?.cls ?? "")}>
                           {PAY_STATUS_META[p.status]?.label ?? p.status}
                         </span>
                       </TableCell>
@@ -119,57 +184,57 @@ export function PaymentsView({ user }: { user: { role: string; id: string; name:
                 </TableBody>
               </Table>
             </div>
-          ) : null}
+          )}
         </TabsContent>
 
         <TabsContent value="cash" className="mt-4">
-          {cashQ.loading ? <LoadingBlock /> : cashQ.error ? <ErrorBlock message={cashQ.error} onRetry={cashQ.reload} /> : null}
-          {cashQ.data ? (
-            <>
-              <div className="mb-4 flex items-center gap-3 rounded-xl border border-ink/10 bg-ivory px-5 py-4">
-                <Landmark className="h-6 w-6 text-brass-dark" />
-                <div>
-                  <div className="text-xs uppercase tracking-wide text-ink-soft">Balance del período</div>
-                  <div className={cn("font-display text-2xl font-bold", cashQ.data.balance >= 0 ? "text-good" : "text-melo-dark")}>
-                    {cop(cashQ.data.balance)}
-                  </div>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-3 rounded-xl border border-ink/10 bg-ivory px-5 py-4">
+              <Landmark className="h-6 w-6 text-brass-dark" />
+              <div>
+                <div className="text-xs uppercase tracking-wide text-ink-soft">Balance del período</div>
+                <div className={cn("font-display text-2xl font-bold", balance >= 0 ? "text-good" : "text-melo-dark")}>
+                  {cop(balance)}
                 </div>
               </div>
-              {cashQ.data.movements.length === 0 ? (
-                <EmptyState title="Sin movimientos" sub="No hubo dinero entrante ni saliente en el rango." />
-              ) : (
-                <div className="overflow-hidden rounded-xl border border-ink/10 bg-ivory">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Fecha</TableHead>
-                        <TableHead>Concepto</TableHead>
-                        <TableHead>Detalle</TableHead>
-                        <TableHead className="text-right">Valor</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {cashQ.data.movements.map((m, i) => (
-                        <TableRow key={`${m.date}-${i}`}>
-                          <TableCell className="text-sm whitespace-nowrap">{fmtDateMedium(new Date(m.date))} {timeHMInBogota(new Date(m.date))}</TableCell>
-                          <TableCell>
-                            <span className={cn("mr-2 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px]", m.kind === "INGRESO" ? "bg-good/15 text-good" : "bg-melo/10 text-melo-dark")}>
-                              {m.kind === "INGRESO" ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />} {m.kind}
-                            </span>
-                            {m.concept}
-                          </TableCell>
-                          <TableCell className="text-sm text-ink-soft">{m.detail}{m.method ? ` · ${METHOD_LABEL[m.method] ?? m.method}` : ""}</TableCell>
-                          <TableCell className={cn("text-right font-semibold tabular-nums", m.kind === "INGRESO" ? "text-good" : "text-melo-dark")}>
-                            {m.kind === "INGRESO" ? "+" : "−"} {cop(m.amount)}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </>
-          ) : null}
+            </div>
+            <Button variant="outline" onClick={downloadCashExcel} disabled={movements.length === 0} className="border-good/50 text-good hover:bg-good/10">
+              <FileDown className="mr-1 h-4 w-4" /> Descargar Excel de caja
+            </Button>
+          </div>
+          {movements.length === 0 ? (
+            <EmptyState title="Sin movimientos" sub="No hubo dinero entrante ni saliente en el rango." />
+          ) : (
+            <div className="overflow-hidden rounded-xl border border-ink/10 bg-ivory">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Fecha</TableHead>
+                    <TableHead>Concepto</TableHead>
+                    <TableHead>Detalle</TableHead>
+                    <TableHead className="text-right">Valor</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {movements.map((m, i) => (
+                    <TableRow key={`${m.date}-${i}`}>
+                      <TableCell className="text-sm whitespace-nowrap">{fmtDateMedium(new Date(m.date))} {timeHMInBogota(new Date(m.date))}</TableCell>
+                      <TableCell>
+                        <span className={cn("mr-2 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px]", m.kind === "INGRESO" ? "bg-good/15 text-good" : "bg-melo/10 text-melo-dark")}>
+                          {m.kind === "INGRESO" ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />} {m.kind}
+                        </span>
+                        {m.concept}
+                      </TableCell>
+                      <TableCell className="text-sm text-ink-soft">{m.detail}{m.method ? ` · ${METHOD_LABEL[m.method] ?? m.method}` : ""}</TableCell>
+                      <TableCell className={cn("text-right font-semibold tabular-nums", m.kind === "INGRESO" ? "text-good" : "text-melo-dark")}>
+                        {m.kind === "INGRESO" ? "+" : "−"} {cop(m.amount)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
         </TabsContent>
       </Tabs>
 
@@ -177,7 +242,7 @@ export function PaymentsView({ user }: { user: { role: string; id: string; name:
         <RefundDialog
           payment={refundFor}
           onClose={() => setRefundFor(null)}
-          onDone={() => { setRefundFor(null); payQ.reload(); cashQ.reload(); }}
+          onDone={() => { setRefundFor(null); setTick((n) => n + 1); }}
         />
       ) : null}
     </div>
@@ -195,10 +260,7 @@ function RefundDialog({ payment, onClose, onDone }: { payment: PaymentRow; onClo
     setBusy(true);
     setErr(null);
     try {
-      await api(`/api/payments/${payment.id}/refund`, {
-        method: "POST",
-        body: JSON.stringify({ amount: Number(amount), reason }),
-      });
+      refundPayment(payment.id, Number(amount), reason, "Propietario");
       toast({ title: "Devolución registrada", description: "Quedó en auditoría. La comisión del barbero no se toca: usa Ajustes si aplica." });
       onDone();
     } catch (e) {
@@ -212,7 +274,7 @@ function RefundDialog({ payment, onClose, onDone }: { payment: PaymentRow; onClo
     <Dialog open onOpenChange={(o) => (o ? undefined : onClose())}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Devolución · {payment.appointment.code}</DialogTitle>
+          <DialogTitle>Devolución · {payment.code}</DialogTitle>
         </DialogHeader>
         <div className="grid gap-3">
           <div className="rounded-xl bg-cream p-3 text-sm">
@@ -240,15 +302,30 @@ function RefundDialog({ payment, onClose, onDone }: { payment: PaymentRow; onClo
 }
 
 /** Vista de cobros del barbero (solo los pagos de sus propias citas). */
-export function MyPaymentsView() {
+export function MyPaymentsView({ user }: { user: SessionUser }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
-  const payQ = useData<{ payments: PaymentRow[] }>(`/api/payments${from ? `?from=${from}` : ""}${to ? `${from ? "&" : "?"}to=${to}` : ""}`, [from, to]);
-  const total = (payQ.data?.payments ?? []).reduce((s, p) => s + (p.amount - p.refundedAmount), 0);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const h = () => setTick((n) => n + 1);
+    window.addEventListener("melo:db-changed", h);
+    return () => window.removeEventListener("melo:db-changed", h);
+  }, []);
+
+  const db = getDB();
+  const rows = useMemo(() => {
+    const myAppts = new Map(db.appointments.filter((a) => a.barberId === user.id).map((a) => [a.id, a]));
+    return db.payments
+      .filter((p) => myAppts.has(p.appointmentId))
+      .filter((p) => (!from || new Date(p.receivedAt) >= new Date(`${from}T00:00:00-05:00`)) && (!to || new Date(p.receivedAt) < new Date(new Date(`${to}T00:00:00-05:00`).getTime() + 24 * 3600 * 1000)))
+      .sort((a, b) => b.receivedAt.localeCompare(a.receivedAt));
+  }, [tick, from, to]);
+
+  const total = rows.reduce((s, p) => s + p.amount - p.refundedAmount, 0);
 
   return (
     <div>
-      <SectionTitle title="Mis cobros" sub="Pagos registrados sobre tus propias citas. El dinero de la caja lo consolida el propietario." />
+      <SectionTitle title="Mis cobros" sub="Pagos registrados sobre tus propias citas. Cada pago que registras se suma automáticamente a la caja del propietario." />
       <div className="mb-4 flex flex-wrap items-end gap-2">
         <div className="grid gap-1">
           <Label className="text-xs">Desde</Label>
@@ -260,24 +337,25 @@ export function MyPaymentsView() {
         </div>
         <div className="ml-auto rounded-xl bg-ivory px-4 py-2 text-sm"><span className="text-ink-soft">Cobrado en mis citas:</span> <b>{cop(total)}</b></div>
       </div>
-      {payQ.loading ? <LoadingBlock /> : null}
-      {payQ.error ? <ErrorBlock message={payQ.error} onRetry={payQ.reload} /> : null}
-      {payQ.data && payQ.data.payments.length === 0 ? <EmptyState title="Sin cobros registrados" sub="Registra el pago desde el detalle de una cita completada." /> : null}
-      {payQ.data && payQ.data.payments.length > 0 ? (
+      {rows.length === 0 ? <EmptyState title="Sin cobros registrados" sub="Registra el pago desde el detalle de una cita completada." /> : (
         <div className="grid gap-2">
-          {payQ.data.payments.map((p) => (
-            <div key={p.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-ink/10 bg-ivory px-4 py-3 text-sm">
-              <Wallet className="h-4 w-4 text-brass-dark" />
-              <span className="font-medium">{p.appointment.code}</span>
-              <span className="text-ink-soft">{p.appointment.service.name} · {p.appointment.clientName}</span>
-              <Chip>{METHOD_LABEL[p.method] ?? p.method}</Chip>
-              <span className={cn("ml-auto font-bold tabular-nums", p.refundedAmount > 0 ? "text-melo-dark" : "text-good")}>
-                {cop(p.amount - p.refundedAmount)}
-              </span>
-            </div>
-          ))}
+          {rows.map((p) => {
+            const appt = db.appointments.find((a) => a.id === p.appointmentId);
+            const service = appt ? db.services.find((s) => s.id === appt.serviceId) : undefined;
+            return (
+              <div key={p.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-ink/10 bg-ivory px-4 py-3 text-sm">
+                <Wallet className="h-4 w-4 text-brass-dark" />
+                <span className="font-medium">{appt?.code}</span>
+                <span className="text-ink-soft">{service?.name} · {appt?.clientName}</span>
+                <Chip>{METHOD_LABEL[p.method] ?? p.method}</Chip>
+                <span className={cn("ml-auto font-bold tabular-nums", p.refundedAmount > 0 ? "text-melo-dark" : "text-good")}>
+                  {cop(p.amount - p.refundedAmount)}
+                </span>
+              </div>
+            );
+          })}
         </div>
-      ) : null}
+      )}
     </div>
   );
 }

@@ -1,0 +1,12 @@
+{
+  "name": "MELO BARBERSHOP",
+  "short_name": "MELO",
+  "description": "Reserva tu cita en MELO BARBERSHOP: cortes, barba y diseño con los mejores barberos.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f0e6",
+  "theme_color": "#a63d40",
+  "icons": [
+    { "src": "/melo-logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

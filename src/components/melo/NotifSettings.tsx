@@ -1,46 +1,102 @@
 "use client";
-// Notificaciones (ambos roles) y Configuración (WhatsApp del propietario).
-import { useState } from "react";
-import { api, useData } from "@/lib/api";
+// Notificaciones (ambos roles), Comunidad (mini red social) y Mi perfil (barbero).
+import { useEffect, useMemo, useState } from "react";
 import { fmtDateMedium, timeHMInBogota } from "@/lib/time";
-import { SectionTitle, LoadingBlock, ErrorBlock, EmptyState, Chip } from "@/components/melo/ui";
+import {
+  getDB, mutateDB, cuid, deviceId, audit, getAdminData,
+  type SessionUser, type Post, type Comment,
+} from "@/lib/store";
+import { permissionState, setupNotificationPersistence, playPreviewSound, currentSound, type NotifPermState } from "@/lib/notify-client";
+import { SectionTitle, EmptyState, Chip } from "@/components/melo/ui";
+import { LEVELS, barberLevel } from "@/components/melo/Dashboards";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { toast } from "@/hooks/use-toast";
-import { Bell, CheckCheck, MessageSquare, Send, RotateCcw, ShieldAlert, CheckCircle2, Clock, Ban } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { toast, useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import {
+  Bell, CheckCheck, Star, Heart, Trash2, EyeOff, Eye, Camera, Plus, Video, Image as ImageIcon,
+  Send, MessageCircle, Lock, ShieldAlert, Volume2, Smartphone, BellRing,
+} from "lucide-react";
 
-export function NotificationsView() {
-  const q = useData<{ notifications: Array<{ id: string; type: string; title: string; message: string; read: boolean; createdAt: string }>; unread: number }>("/api/notifications");
+// ============================================================ NOTIFICACIONES
+export function NotificationsView({ user }: { user: SessionUser }) {
+  const [tick, setTick] = useState(0);
+  const [perm, setPerm] = useState<NotifPermState>("default");
+  useEffect(() => {
+    const h = () => setTick((n) => n + 1);
+    window.addEventListener("melo:db-changed", h);
+    setupNotificationPersistence(setPerm);
+    return () => window.removeEventListener("melo:db-changed", h);
+  }, []);
+
+  const db = getDB();
+  const myId = user.role === "OWNER" ? "OWNER" : user.id;
+  const notifications = db.notifications.filter((n) => n.userId === myId);
+  const admin = getAdminData();
+
+  function markAll() {
+    mutateDB((d) => {
+      for (const n of d.notifications) if (n.userId === myId) n.read = true;
+    });
+    setTick((n) => n + 1);
+  }
 
   return (
     <div>
       <SectionTitle
         title="Notificaciones"
-        sub="Internas y siempre operativas: nuevas reservas, cambios, cancelaciones, próximas citas y eventos financieros autorizados. WhatsApp es un complemento, no un requisito."
+        sub="Reservas, cancelaciones, pagos y servicios completados. Con las notificaciones del dispositivo activadas te enteras aunque estés en otra app."
         right={
-          <Button
-            variant="outline"
-            className="border-brass/50 text-brass-dark hover:bg-brass/10"
-            onClick={async () => {
-              await api("/api/notifications", { method: "POST" });
-              q.reload();
-            }}
-          >
+          <Button variant="outline" onClick={markAll} className="border-brass/50 text-brass-dark hover:bg-brass/10">
             <CheckCheck className="mr-1 h-4 w-4" /> Marcar todas leídas
           </Button>
         }
       />
-      {q.loading ? <LoadingBlock /> : null}
-      {q.error ? <ErrorBlock message={q.error} onRetry={q.reload} /> : null}
-      {q.data && q.data.notifications.length === 0 ? (
+
+      {/* estado de permisos push */}
+      <div className={cn(
+        "mb-5 flex flex-wrap items-center gap-3 rounded-2xl border p-4",
+        perm === "granted" ? "border-good/40 bg-good/5" : perm === "denied" ? "border-melo/40 bg-melo/10" : "border-warn/40 bg-warn/5"
+      )}>
+        {perm === "granted" ? <BellRing className="h-6 w-6 text-good" /> : perm === "denied" ? <ShieldAlert className="h-6 w-6 text-melo-dark" /> : <Smartphone className="h-6 w-6 text-warn" />}
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold">
+            {perm === "granted" ? "Notificaciones del dispositivo activadas ✔" : perm === "denied" ? "Notificaciones bloqueadas en este dispositivo" : "Notificaciones del dispositivo sin activar"}
+          </div>
+          <div className="text-xs text-ink-soft">
+            {perm === "granted"
+              ? `Sonido: ${admin.notif.sound} · vibración ${admin.notif.vibrate ? "activada" : "desactivada"}. Llegan sobre cualquier pantalla.`
+              : perm === "denied"
+                ? "Desbloquéalas desde el icono del candado/ajustes de la barra de direcciones del navegador para no perderte reservas."
+                : "El sistema te las pedirá constantemente hasta que las actives; así no se pierde ninguna reserva."}
+          </div>
+        </div>
+        {perm !== "granted" ? (
+          <Button
+            size="sm"
+            className="bg-ink text-ivory hover:bg-ink/80"
+            onClick={async () => {
+              const { requestPermission } = await import("@/lib/notify-client");
+              const r = await requestPermission();
+              setPerm(r);
+            }}
+          >
+            Activar ahora
+          </Button>
+        ) : null}
+      </div>
+
+      {notifications.length === 0 ? (
         <EmptyState icon={<Bell className="h-8 w-8" />} title="Sin notificaciones" sub="Cuando haya eventos aparecerán aquí." />
-      ) : null}
-      {q.data && q.data.notifications.length > 0 ? (
+      ) : (
         <div className="flex max-h-125 flex-col gap-2 overflow-y-auto pr-1 nice-scroll">
-          {q.data.notifications.map((n) => (
+          {notifications.map((n) => (
             <div key={n.id} className={cn("rounded-xl border p-4", n.read ? "border-ink/10 bg-ivory opacity-75" : "border-brass/40 bg-brass/5")}>
               <div className="flex flex-wrap items-center gap-2">
                 <span className={cn("text-sm font-semibold", n.read ? "text-ink/70" : "text-ink")}>{n.title}</span>
@@ -52,168 +108,446 @@ export function NotificationsView() {
             </div>
           ))}
         </div>
-      ) : null}
+      )}
     </div>
   );
 }
 
-type WaRecord = {
-  id: string;
-  toPhone: string;
-  messageType: string;
-  body: string;
-  status: string;
-  providerMessageId: string | null;
-  error: string | null;
-  attempts: number;
-  createdAt: string;
-  appointmentCode: string | null;
-};
+// ============================================================ COMUNIDAD (moderación del dueño)
+export function SocialModerationView() {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const h = () => setTick((n) => n + 1);
+    window.addEventListener("melo:db-changed", h);
+    return () => window.removeEventListener("melo:db-changed", h);
+  }, []);
+  const [barberFilter, setBarberFilter] = useState("ALL");
+  const [tab, setTab] = useState("posts");
 
-export function SettingsView() {
-  const q = useData<{ config: { configured: boolean; provider: string; apiUrl: string; apiVersion: string; phoneNumberIdMasked: string | null; messageMode: string }; counts: Record<string, number>; recent: WaRecord[] }>(
-    "/api/whatsapp/status"
-  );
-  const [testTo, setTestTo] = useState("+573001234567");
-  const [busy, setBusy] = useState(false);
+  const db = getDB();
+  const posts = db.posts.filter((p) => (barberFilter === "ALL" ? true : p.barberId === barberFilter));
+  const comments = db.comments.filter((c) => (barberFilter === "ALL" ? true : c.barberId === barberFilter));
 
-  const cfg = q.data?.config;
-  const counts = q.data?.counts ?? {};
-
-  async function sendTest() {
-    setBusy(true);
-    try {
-      const res = await api<{ status: string }>("/api/whatsapp/test", { method: "POST", body: JSON.stringify({ to: testTo }) });
-      toast({
-        title: res.status === "SENT" ? "Mensaje de prueba enviado" : `Estado: ${res.status}`,
-        description: res.status === "SENT" ? "El proveedor respondió con un id de mensaje." : "Revisa el registro para más detalle.",
-      });
-      q.reload();
-    } catch (e) {
-      toast({ title: "No se pudo enviar", description: e instanceof Error ? e.message : "", variant: "destructive" });
-    } finally {
-      setBusy(false);
-    }
+  function toggleHidePost(postId: string) {
+    mutateDB((d) => {
+      const p = d.posts.find((x) => x.id === postId);
+      if (p) p.hidden = !p.hidden;
+    });
+    audit("POST", postId, "TOGGLE_HIDE", "Propietario");
+    setTick((n) => n + 1);
   }
-
-  async function retry() {
-    setBusy(true);
-    try {
-      const res = await api<{ requeued: number }>("/api/whatsapp/retry", { method: "POST" });
-      toast({ title: `Reintentos encolados: ${res.requeued}` });
-      q.reload();
-    } finally {
-      setBusy(false);
-    }
+  function deletePost(postId: string) {
+    mutateDB((d) => {
+      d.posts = d.posts.filter((x) => x.id !== postId);
+      d.comments = d.comments.filter((c) => c.postId !== postId);
+    });
+    audit("POST", postId, "DELETE", "Propietario");
+    setTick((n) => n + 1);
+    toast({ title: "Publicación eliminada" });
+  }
+  function toggleHideComment(commentId: string) {
+    mutateDB((d) => {
+      const c = d.comments.find((x) => x.id === commentId);
+      if (c) c.hidden = !c.hidden;
+    });
+    audit("COMMENT", commentId, "TOGGLE_HIDE", "Propietario");
+    setTick((n) => n + 1);
+  }
+  function deleteComment(commentId: string) {
+    mutateDB((d) => {
+      d.comments = d.comments.filter((x) => x.id !== commentId);
+    });
+    audit("COMMENT", commentId, "DELETE", "Propietario");
+    setTick((n) => n + 1);
+    toast({ title: "Comentario eliminado" });
   }
 
   return (
     <div>
-      <SectionTitle title="Configuración" sub="Integración de WhatsApp y estado del sistema. Las credenciales viven solo en variables de entorno del servidor; nunca se exponen en el navegador." />
+      <SectionTitle
+        title="Comunidad"
+        sub="La mini red social de tus barberos: aprueba, oculta o elimina publicaciones y comentarios. Solo tú puedes borrar contenido de los clientes."
+      />
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className={cn("rounded-2xl border p-5", cfg?.configured ? "border-good/40 bg-good/5" : "border-ink/15 bg-ivory")}>
-          <div className="mb-2 flex items-center gap-2 font-display text-lg font-bold">
-            <MessageSquare className="h-5 w-5" /> WhatsApp Business
-          </div>
-          {!q.loading && cfg ? (
-            <>
-              <div className="mb-3 flex items-center gap-2 text-sm">
-                {cfg.configured ? (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-good/15 px-3 py-1 font-medium text-good"><CheckCircle2 className="h-4 w-4" /> Configurado</span>
-                ) : (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-warn/15 px-3 py-1 font-medium text-warn"><Clock className="h-4 w-4" /> Pendiente de configuración</span>
-                )}
-              </div>
-              <div className="grid gap-1 text-sm text-ink-soft">
-                <div>Proveedor: <b className="text-ink">{cfg.provider}</b></div>
-                <div>API: <span className="tabular-nums">{cfg.apiUrl}/{cfg.apiVersion}</span></div>
-                <div>Número (id): <span className="tabular-nums">{cfg.phoneNumberIdMasked ?? "—"}</span></div>
-                <div>Modo de mensaje: {cfg.messageMode === "template" ? "plantillas aprobadas" : "texto (sesión 24 h)"}</div>
-              </div>
+      <div className="mb-4 flex flex-wrap gap-2">
+        <Select value={barberFilter} onValueChange={setBarberFilter}>
+          <SelectTrigger className="w-52"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ALL">Todos los barberos</SelectItem>
+            {db.barbers.map((b) => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </div>
 
-              {!cfg.configured ? (
-                <div className="mt-4 rounded-xl bg-cream p-4 text-sm">
-                  <div className="mb-1 flex items-center gap-2 font-semibold text-warn"><ShieldAlert className="h-4 w-4" /> Sin credenciales</div>
-                  <p className="text-ink-soft">
-                    La agenda y las notificaciones internas siguen funcionando con normalidad. Define en el archivo <code className="rounded bg-ink/10 px-1">.env</code>:
-                  </p>
-                  <pre className="mt-2 overflow-x-auto rounded-lg bg-ink p-3 text-xs text-cream">{`WHATSAPP_TOKEN=EAAG...
-WHATSAPP_PHONE_NUMBER_ID=123456789
-# opcional, proveedor compatible:
-# WHATSAPP_API_URL=https://graph.facebook.com
-# WHATSAPP_MESSAGE_MODE=template`}</pre>
-                  <p className="mt-2 text-xs text-ink-soft">Nunca se afirma un envío que no ocurrió: los mensajes quedan “pendiente de configuración”.</p>
-                </div>
-              ) : (
-                <div className="mt-4 grid gap-2">
-                  <div className="grid gap-1">
-                    <Label className="text-xs">Mensaje de prueba</Label>
-                    <div className="flex gap-2">
-                      <Input value={testTo} onChange={(e) => setTestTo(e.target.value)} className="w-44" />
-                      <Button disabled={busy} onClick={sendTest} className="bg-good hover:bg-good/85 text-ivory"><Send className="mr-1 h-4 w-4" /> Probar</Button>
+      <div className="grid gap-3">
+        <Tabsish value={tab} onChange={setTab} />
+        {tab === "posts" ? (
+          posts.length === 0 ? (
+            <EmptyState title="Sin publicaciones" sub="Los barberos con permiso de perfil pueden subir fotos y videos de sus trabajos." />
+          ) : (
+            <div className="grid gap-3">
+              {posts.map((p) => {
+                const barber = db.barbers.find((b) => b.id === p.barberId);
+                return (
+                  <div key={p.id} className={cn("rounded-2xl border p-4", p.hidden ? "border-ink/10 bg-cream/60 opacity-75" : "border-ink/10 bg-ivory")}>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold">{barber?.name ?? "—"}</span>
+                      <Chip>{p.media[0]?.type === "VIDEO" ? "video" : "foto"}{p.media.length > 1 ? ` ×${p.media.length}` : ""}</Chip>
+                      <Chip className="border-melo/40 text-melo-dark">❤️ {p.likes.length}</Chip>
+                      <Chip>{db.comments.filter((c) => c.postId === p.id).length} comentarios</Chip>
+                      {p.hidden ? <Chip className="border-ink/30 text-ink-soft">oculta</Chip> : null}
+                      <span className="ml-auto text-[11px] text-ink/40">{fmtDateMedium(new Date(p.createdAt))}</span>
+                    </div>
+                    {p.caption ? <p className="mt-1 text-sm text-ink-soft">{p.caption}</p> : null}
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {p.media.map((m, i) => (
+                        m.type === "VIDEO" ? (
+                          <video key={i} src={m.src} className="h-20 w-28 rounded-lg object-cover" muted playsInline preload="metadata" />
+                        ) : (
+                          <img key={i} src={m.src} alt="" className="h-20 w-28 rounded-lg object-cover" />
+                        )
+                      ))}
+                    </div>
+                    <div className="mt-3 flex gap-2">
+                      <Button size="sm" variant="outline" className="h-7 border-ink/20" onClick={() => toggleHidePost(p.id)}>
+                        {p.hidden ? <><Eye className="mr-1 h-3 w-3" /> Mostrar</> : <><EyeOff className="mr-1 h-3 w-3" /> Ocultar</>}
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-7 border-melo/40 text-melo-dark" onClick={() => deletePost(p.id)}>
+                        <Trash2 className="mr-1 h-3 w-3" /> Eliminar
+                      </Button>
                     </div>
                   </div>
-                </div>
-              )}
-
-              <div className="mt-4 flex flex-wrap gap-2 text-xs">
-                <Chip className="border-good/40 text-good">Enviados: {counts.SENT ?? 0}</Chip>
-                <Chip className="border-warn/40 text-warn">En cola: {counts.QUEUED ?? 0}</Chip>
-                <Chip className="border-melo/40 text-melo-dark">Fallidos: {counts.FAILED ?? 0}</Chip>
-                <Chip>Pend. config: {counts.PENDING_CONFIG ?? 0}</Chip>
-                <Chip>Sin teléfono: {counts.SKIPPED ?? 0}</Chip>
-              </div>
-              <Button variant="outline" onClick={retry} disabled={busy} className="mt-3 border-ink/20">
-                <RotateCcw className="mr-1 h-4 w-4" /> Reintentar fallidos (máx. 3 intentos por mensaje)
-              </Button>
-            </>
+                );
+              })}
+            </div>
+          )
+        ) : (
+          comments.length === 0 ? (
+            <EmptyState title="Sin comentarios" sub="Los comentarios y reseñas de los clientes aparecerán aquí para su moderación." />
           ) : (
-            <LoadingBlock label="Consultando integración…" />
-          )}
-        </div>
-
-        <div className="rounded-2xl border border-ink/10 bg-ivory p-5">
-          <div className="mb-2 font-display text-lg font-bold">Registro de mensajes</div>
-          <p className="mb-3 text-xs text-ink-soft">Cada envío conserva su identificador de evento (deduplicación), intentos y, si hubo respuesta, el id del proveedor.</p>
-          {!q.data || q.data.recent.length === 0 ? (
-            <EmptyState title="Sin mensajes registrados" sub="Aparecen al reservar con teléfono o al programar recordatorios." />
-          ) : (
-            <div className="max-h-90 overflow-y-auto pr-1 nice-scroll">
+            <div className="overflow-x-auto rounded-xl border border-ink/10 bg-ivory">
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Fecha</TableHead>
-                    <TableHead>Destino</TableHead>
+                    <TableHead>Autor</TableHead>
+                    <TableHead>Barbero</TableHead>
                     <TableHead>Tipo</TableHead>
+                    <TableHead>Contenido</TableHead>
                     <TableHead>Estado</TableHead>
-                    <TableHead>Id / error</TableHead>
+                    <TableHead />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {q.data.recent.map((m) => (
-                    <TableRow key={m.id}>
-                      <TableCell className="whitespace-nowrap text-xs">{fmtDateMedium(new Date(m.createdAt))} {timeHMInBogota(new Date(m.createdAt))}</TableCell>
-                      <TableCell className="text-xs tabular-nums">{m.toPhone || "—"}</TableCell>
-                      <TableCell className="text-xs">{m.messageType}</TableCell>
+                  {comments.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((c) => (
+                    <TableRow key={c.id} className={c.hidden ? "opacity-60" : ""}>
+                      <TableCell className="whitespace-nowrap text-xs">{fmtDateMedium(new Date(c.createdAt))}</TableCell>
+                      <TableCell className="text-sm font-medium">{c.authorName}</TableCell>
+                      <TableCell className="text-sm">{db.barbers.find((b) => b.id === c.barberId)?.name ?? "—"}</TableCell>
                       <TableCell>
-                        <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]",
-                          m.status === "SENT" ? "bg-good/15 text-good border-good/40"
-                            : m.status === "FAILED" ? "bg-melo/15 text-melo-dark border-melo/40"
-                            : m.status === "PENDING_CONFIG" ? "bg-warn/15 text-warn border-warn/40" : "bg-ink/10 text-ink-soft border-ink/30")}>
-                          {m.status === "SENT" ? <CheckCircle2 className="h-3 w-3" /> : m.status === "FAILED" ? <Ban className="h-3 w-3" /> : <Clock className="h-3 w-3" />}
-                          {m.status}
-                        </span>
+                        {c.rating ? (
+                          <span className="inline-flex items-center gap-0.5">
+                            {Array.from({ length: 5 }, (_, i) => (
+                              <Star key={i} className={cn("h-3 w-3", i < c.rating! ? "fill-brass text-brass" : "text-ink/20")} />
+                            ))}
+                          </span>
+                        ) : (
+                          <Chip>comentario</Chip>
+                        )}
                       </TableCell>
-                      <TableCell className="max-w-52 truncate text-[11px] text-ink-soft">
-                        {m.providerMessageId ?? m.error?.slice(0, 80) ?? "—"}{m.attempts > 1 ? ` (${m.attempts} intentos)` : ""}
+                      <TableCell className="max-w-64 truncate text-sm text-ink-soft">{c.text}</TableCell>
+                      <TableCell className="text-xs">{c.hidden ? "oculto" : "visible"}</TableCell>
+                      <TableCell>
+                        <div className="flex gap-1">
+                          <Button size="sm" variant="ghost" className="h-7" onClick={() => toggleHideComment(c.id)}>
+                            {c.hidden ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                          </Button>
+                          <Button size="sm" variant="ghost" className="h-7 text-melo-dark" onClick={() => deleteComment(c.id)}>
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
             </div>
+          )
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Tabsish({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="flex gap-2">
+      {[
+        { id: "posts", label: "Publicaciones" },
+        { id: "comments", label: "Comentarios y reseñas" },
+      ].map((t) => (
+        <button
+          key={t.id}
+          onClick={() => onChange(t.id)}
+          className={cn(
+            "rounded-full border px-4 py-2 text-sm font-medium transition",
+            value === t.id ? "border-ink bg-ink text-ivory" : "border-ink/15 bg-ivory text-ink-soft"
           )}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ============================================================ MI PERFIL (barbero)
+export function MyProfileView({ user }: { user: SessionUser }) {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const h = () => setTick((n) => n + 1);
+    window.addEventListener("melo:db-changed", h);
+    return () => window.removeEventListener("melo:db-changed", h);
+  }, []);
+
+  const db = getDB();
+  const barber = db.barbers.find((b) => b.id === user.id);
+  if (!barber) return <EmptyState title="Perfil no encontrado" />;
+  const canEdit = !!barber.permissions["profile.edit"];
+
+  const posts = db.posts.filter((p) => p.barberId === user.id && !p.hidden);
+  const reviews = db.comments.filter((c) => c.barberId === user.id && c.postId === null && !c.hidden && c.rating);
+  const avg = reviews.length ? Math.round((reviews.reduce((s, c) => s + (c.rating ?? 0), 0) / reviews.length) * 10) / 10 : 0;
+  const done = db.appointments.filter((a) => a.barberId === user.id && a.status === "COMPLETED").length;
+  const likes = posts.reduce((s, p) => s + p.likes.length, 0);
+  const lvl = barberLevel(done);
+
+  return (
+    <div>
+      <SectionTitle
+        title="Mi perfil"
+        sub="Tu tarjeta pública: foto, reseña, trabajos y puntaje. Los clientes la ven al elegirte en la reserva."
+      />
+
+      {/* resumen social */}
+      <div className="mb-6 rounded-2xl border border-brass/40 bg-gradient-to-r from-brass/10 to-ivory p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-4">
+            {barber.photo ? (
+              <img src={barber.photo} alt={barber.name} className="h-16 w-16 rounded-2xl object-cover ring-4 ring-brass/30" />
+            ) : (
+              <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-brass/15 font-display text-2xl font-bold text-brass-dark">
+                {barber.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}
+              </span>
+            )}
+            <div>
+              <div className="font-display text-xl font-bold">{barber.name} <span className="ml-1">{lvl.current.icon}</span></div>
+              <div className="text-sm text-ink-soft">{barber.specialty || "Barbero profesional"}</div>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">
+                <Chip className="border-brass/40 text-brass-dark"><Star className="h-3.5 w-3.5 fill-brass" /> {avg || "—"} / 5</Chip>
+                <Chip className="border-melo/40 text-melo-dark">❤️ {likes}</Chip>
+                <Chip>✂️ {done} servicios</Chip>
+              </div>
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-xs uppercase tracking-wide text-ink-soft">Nivel</div>
+            <div className="font-display text-2xl font-bold">{lvl.current.name}</div>
+            {lvl.next ? <div className="text-xs text-ink-soft">{done}/{lvl.next.min} para {lvl.next.name} {lvl.next.icon}</div> : <div className="text-xs text-ink-soft">¡Nivel máximo! 👑</div>}
+          </div>
+        </div>
+        <div className="mt-4">
+          <div className="mb-1 flex justify-between text-xs text-ink-soft">
+            <span>Progreso</span>
+            <span>{LEVELS.map((l) => `${l.icon} ${l.name} (${l.min})`).join(" · ")}</span>
+          </div>
+          <div className="h-3 overflow-hidden rounded-full bg-ink/10">
+            <div className="h-full rounded-full bg-gradient-to-r from-brass to-melo transition-all" style={{ width: `${lvl.progress}%` }} />
+          </div>
+        </div>
+      </div>
+
+      {!canEdit ? (
+        <div className="rounded-xl border border-dashed border-ink/15 bg-cream p-6 text-center text-sm text-ink-soft">
+          <Lock className="mx-auto mb-2 h-5 w-5" />
+          El propietario aún no te ha dado permiso para editar tu perfil y subir trabajos. Pídeselo desde tu próximo ajuste de accesos.
+        </div>
+      ) : (
+        <BarberProfileEditor barber={barber} onChanged={() => setTick((n) => n + 1)} />
+      )}
+    </div>
+  );
+}
+
+function BarberProfileEditor({ barber, onChanged }: { barber: ReturnType<typeof getDB>["barbers"][number]; onChanged: () => void }) {
+  const [bio, setBio] = useState(barber.bio);
+  const [specialty, setSpecialty] = useState(barber.specialty);
+  const [photo, setPhoto] = useState<string | null>(barber.photo);
+  const [caption, setCaption] = useState("");
+  const [busy, setBusy] = useState(false);
+  const { toast } = useToast();
+
+  async function compressFile(file: File, isVideo: boolean): Promise<string> {
+    if (isVideo) {
+      return await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(new Error("no se pudo leer"));
+        reader.readAsDataURL(file);
+      });
+    }
+    // imagen: reescalar
+    const { } = { };
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const scale = Math.min(1, 1100 / Math.max(img.width, img.height));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.round(img.width * scale);
+          canvas.height = Math.round(img.height * scale);
+          const ctx = canvas.getContext("2d");
+          if (!ctx) { reject(new Error("sin canvas")); return; }
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL("image/jpeg", 0.8));
+        };
+        img.onerror = () => reject(new Error("imagen inválida"));
+        img.src = reader.result as string;
+      };
+      reader.onerror = () => reject(new Error("no se pudo leer"));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function saveProfile() {
+    setBusy(true);
+    try {
+      mutateDB((d) => {
+        const b = d.barbers.find((x) => x.id === barber.id);
+        if (!b) return;
+        b.bio = bio.trim();
+        b.specialty = specialty.trim();
+        b.photo = photo;
+      });
+      onChanged();
+      toast({ title: "Perfil actualizado" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function uploadPost(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setBusy(true);
+    try {
+      const media = [] as Array<{ type: "IMAGE" | "VIDEO"; src: string }>;
+      for (const f of Array.from(files).slice(0, 4)) {
+        const isVideo = f.type.startsWith("video/");
+        const src = await compressFile(f, isVideo);
+        media.push({ type: isVideo ? "VIDEO" : "IMAGE", src });
+      }
+      mutateDB((d) => {
+        d.posts.unshift({
+          id: cuid("post"),
+          barberId: barber.id,
+          caption: caption.trim(),
+          media,
+          likes: [],
+          createdAt: new Date().toISOString(),
+        });
+      });
+      setCaption("");
+      onChanged();
+      toast({ title: "Trabajo publicado", description: "Ya es visible en tu perfil público." });
+    } catch (e) {
+      toast({ title: "No se pudo subir", description: e instanceof Error ? e.message : "Error", variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function deletePost(postId: string) {
+    mutateDB((d) => {
+      d.posts = d.posts.filter((x) => x.id !== postId);
+      d.comments = d.comments.filter((c) => c.postId !== postId);
+    });
+    onChanged();
+    toast({ title: "Publicación eliminada" });
+  }
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <div className="rounded-2xl border border-ink/10 bg-ivory p-5">
+        <div className="mb-3 font-display text-lg font-bold">Mi tarjeta pública</div>
+        <div className="mb-4 flex items-center gap-4">
+          {photo ? (
+            <img src={photo} alt={barber.name} className="h-20 w-20 rounded-2xl object-cover ring-4 ring-brass/30" />
+          ) : (
+            <span className="flex h-20 w-20 items-center justify-center rounded-2xl bg-brass/15 font-display text-2xl font-bold text-brass-dark">
+              {barber.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}
+            </span>
+          )}
+          <label className="cursor-pointer">
+            <span className="inline-flex items-center gap-2 rounded-xl border border-brass/50 bg-brass/10 px-3 py-2 text-sm font-medium text-brass-dark hover:bg-brass/20">
+              <Camera className="h-4 w-4" /> Cambiar foto
+            </span>
+            <input
+              type="file" accept="image/*" className="hidden"
+              onChange={async (e) => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                try {
+                  const src = await compressFile(f, false);
+                  setPhoto(typeof src === "string" ? src : null);
+                } catch {
+                  toast({ title: "No se pudo cargar la imagen", variant: "destructive" });
+                }
+              }}
+            />
+          </label>
+        </div>
+        <div className="grid gap-3">
+          <div className="grid gap-1"><Label>Especialidad</Label><Input value={specialty} onChange={(e) => setSpecialty(e.target.value)} placeholder="Ej: Fades y diseño" /></div>
+          <div className="grid gap-1"><Label>Reseña corta</Label><Textarea rows={4} value={bio} onChange={(e) => setBio(e.target.value)} placeholder="Cuéntale a los clientes tu experiencia y estilo…" /></div>
+          <Button disabled={busy} onClick={saveProfile} className="bg-ink text-ivory hover:bg-ink/80">Guardar perfil</Button>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-ink/10 bg-ivory p-5">
+        <div className="mb-1 font-display text-lg font-bold">Mis trabajos</div>
+        <p className="mb-3 text-xs text-ink-soft">Sube fotos o videos de tus cortes: se muestran en tu perfil público y acumulan me gusta y comentarios.</p>
+        <div className="mb-3 grid gap-2">
+          <Input value={caption} onChange={(e) => setCaption(e.target.value)} placeholder="Descripción del trabajo (opcional)" />
+          <label className="cursor-pointer">
+            <span className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-brass/50 bg-brass/5 px-3 py-3 text-sm font-medium text-brass-dark hover:bg-brass/10">
+              <Plus className="h-4 w-4" /> <Video className="h-4 w-4" /> <ImageIcon className="h-4 w-4" /> Subir fotos o videos
+            </span>
+            <input type="file" accept="image/*,video/*" multiple className="hidden" onChange={(e) => uploadPost(e.target.files)} disabled={busy} />
+          </label>
+        </div>
+        {busy ? <div className="text-sm text-ink-soft">Procesando…</div> : null}
+        <div className="grid max-h-96 gap-3 overflow-y-auto pr-1 nice-scroll">
+          {getDB().posts.filter((p) => p.barberId === barber.id).map((p) => (
+            <div key={p.id} className={cn("rounded-xl border p-3", p.hidden ? "border-ink/10 bg-cream/60 opacity-70" : "border-ink/10 bg-cream")}>
+              <div className="flex items-center gap-2">
+                <Chip>{p.media[0]?.type === "VIDEO" ? "video" : "foto"}{p.media.length > 1 ? ` ×${p.media.length}` : ""}</Chip>
+                <Chip className="border-melo/40 text-melo-dark">❤️ {p.likes.length}</Chip>
+                <Chip><MessageCircle className="h-3 w-3" /> {getDB().comments.filter((c) => c.postId === p.id && !c.hidden).length}</Chip>
+                <Button size="sm" variant="ghost" className="ml-auto h-7 text-melo-dark" onClick={() => deletePost(p.id)}><Trash2 className="h-3 w-3" /></Button>
+              </div>
+              {p.caption ? <div className="mt-1 text-sm text-ink-soft">{p.caption}</div> : null}
+              <div className="mt-2 flex gap-2">
+                {p.media.map((m, i) => (
+                  m.type === "VIDEO" ? (
+                    <video key={i} src={m.src} className="h-16 w-24 rounded-lg object-cover" muted playsInline preload="metadata" />
+                  ) : (
+                    <img key={i} src={m.src} alt="" className="h-16 w-24 rounded-lg object-cover" />
+                  )
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>

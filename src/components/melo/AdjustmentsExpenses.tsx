@@ -1,10 +1,10 @@
 "use client";
 // Ajustes (anticipos, devoluciones, manuales) y Gastos operativos del propietario.
-import { useState } from "react";
-import { api, useData } from "@/lib/api";
+import { useEffect, useMemo, useState } from "react";
 import { cop } from "@/lib/money";
 import { fmtDateMedium } from "@/lib/time";
-import { SectionTitle, LoadingBlock, ErrorBlock, EmptyState, Chip, CATEGORY_LABEL } from "@/components/melo/ui";
+import { getDB, mutateDB, audit, cuid, type Adjustment, type Expense } from "@/lib/store";
+import { SectionTitle, EmptyState, Chip, CATEGORY_LABEL } from "@/components/melo/ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,25 +16,44 @@ import { toast } from "@/hooks/use-toast";
 import { SlidersHorizontal, Plus, Receipt, Pencil, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-type AdjustmentRow = {
-  id: string;
-  type: "ADVANCE" | "REFUND" | "MANUAL";
-  amount: number;
-  reason: string;
-  status: "PENDING" | "SETTLED";
-  appointmentCode: string | null;
-  createdAt: string;
-  barber: { id: string; name: string };
-  createdBy: { name: string };
-};
-
 export function AdjustmentsView() {
-  const barbersQ = useData<{ barbers: Array<{ id: string; name: string }> }>("/api/commissions/config");
+  const [tick, setTick] = useState(0);
   const [status, setStatus] = useState("");
-  const q = useData<{ adjustments: AdjustmentRow[] }>(`/api/adjustments${status ? `?status=${status}` : ""}`, [status]);
   const [open, setOpen] = useState(false);
 
-  const totalPendiente = (q.data?.adjustments ?? []).filter((a) => a.status === "PENDING").reduce((s, a) => s + a.amount, 0);
+  useEffect(() => {
+    const h = () => setTick((n) => n + 1);
+    window.addEventListener("melo:db-changed", h);
+    return () => window.removeEventListener("melo:db-changed", h);
+  }, []);
+
+  const db = getDB();
+  const adjustments = useMemo(
+    () => db.adjustments.filter((a) => (status ? a.status === status : true)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    [tick, status]
+  );
+  const totalPendiente = db.adjustments.filter((a) => a.status === "PENDING").reduce((s, a) => s + a.amount, 0);
+
+  function create(barberId: string, type: Adjustment["type"], amount: number, reason: string) {
+    let signed = Math.round(amount);
+    if (type === "ADVANCE") signed = -Math.abs(Math.round(amount));
+    if (type === "REFUND") signed = -Math.abs(Math.round(amount));
+    mutateDB((d) => {
+      d.adjustments.unshift({
+        id: cuid("adj"),
+        barberId,
+        type,
+        amount: signed,
+        reason: reason.trim(),
+        status: "PENDING",
+        createdByName: "Propietario",
+        createdAt: new Date().toISOString(),
+      });
+    });
+    audit("ADJUSTMENT", barberId, "CREATE", "Propietario", null, { type, amount: signed, reason });
+    setTick((n) => n + 1);
+    toast({ title: "Ajuste registrado", description: "Quedó con motivo y auditoría." });
+  }
 
   return (
     <div>
@@ -60,12 +79,9 @@ export function AdjustmentsView() {
         </Select>
       </div>
 
-      {q.loading ? <LoadingBlock /> : null}
-      {q.error ? <ErrorBlock message={q.error} onRetry={q.reload} /> : null}
-      {q.data && q.data.adjustments.length === 0 ? (
+      {adjustments.length === 0 ? (
         <EmptyState icon={<SlidersHorizontal className="h-8 w-8" />} title="Sin ajustes" sub="Registra anticipos o devoluciones cuando ocurran." />
-      ) : null}
-      {q.data && q.data.adjustments.length > 0 ? (
+      ) : (
         <div className="overflow-x-auto rounded-xl border border-ink/10 bg-ivory">
           <Table>
             <TableHeader>
@@ -74,19 +90,17 @@ export function AdjustmentsView() {
                 <TableHead>Barbero</TableHead>
                 <TableHead>Tipo</TableHead>
                 <TableHead>Motivo</TableHead>
-                <TableHead>Cita</TableHead>
                 <TableHead className="text-right">Efecto</TableHead>
                 <TableHead>Estado</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {q.data.adjustments.map((a) => (
+              {adjustments.map((a) => (
                 <TableRow key={a.id}>
                   <TableCell className="text-sm">{fmtDateMedium(new Date(a.createdAt))}</TableCell>
-                  <TableCell className="text-sm">{a.barber.name}</TableCell>
+                  <TableCell className="text-sm">{db.barbers.find((b) => b.id === a.barberId)?.name ?? "—"}</TableCell>
                   <TableCell><Chip>{a.type === "ADVANCE" ? "anticipo" : a.type === "REFUND" ? "devolución" : "manual"}</Chip></TableCell>
                   <TableCell className="text-sm text-ink-soft">{a.reason}</TableCell>
-                  <TableCell className="text-sm">{a.appointmentCode ?? "—"}</TableCell>
                   <TableCell className={cn("text-right font-bold tabular-nums", a.amount < 0 ? "text-melo-dark" : "text-good")}>
                     {a.amount >= 0 ? "+" : "−"} {cop(Math.abs(a.amount))}
                   </TableCell>
@@ -100,42 +114,30 @@ export function AdjustmentsView() {
             </TableBody>
           </Table>
         </div>
-      ) : null}
+      )}
 
       {open ? (
         <NewAdjustmentDialog
-          barbers={barbersQ.data?.barbers ?? []}
+          barbers={db.barbers}
           onClose={() => setOpen(false)}
-          onCreated={() => { setOpen(false); q.reload(); toast({ title: "Ajuste registrado", description: "Quedó con motivo y auditoría." }); }}
+          onCreated={() => { setOpen(false); }}
+          onCreate={create}
         />
       ) : null}
     </div>
   );
 }
 
-function NewAdjustmentDialog({ barbers, onClose, onCreated }: { barbers: Array<{ id: string; name: string }>; onClose: () => void; onCreated: () => void }) {
+function NewAdjustmentDialog({ barbers, onClose, onCreated, onCreate }: {
+  barbers: Array<{ id: string; name: string }>;
+  onClose: () => void; onCreated: () => void;
+  onCreate: (barberId: string, type: Adjustment["type"], amount: number, reason: string) => void;
+}) {
   const [barberId, setBarberId] = useState("");
-  const [type, setType] = useState<"ADVANCE" | "REFUND" | "MANUAL">("ADVANCE");
+  const [type, setType] = useState<Adjustment["type"]>("ADVANCE");
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-
-  async function create() {
-    setBusy(true);
-    setErr(null);
-    try {
-      await api("/api/adjustments", {
-        method: "POST",
-        body: JSON.stringify({ barberId, type, amount: Number(amount), reason }),
-      });
-      onCreated();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Error");
-    } finally {
-      setBusy(false);
-    }
-  }
 
   return (
     <Dialog open onOpenChange={(o) => (o ? undefined : onClose())}>
@@ -151,7 +153,7 @@ function NewAdjustmentDialog({ barbers, onClose, onCreated }: { barbers: Array<{
           </div>
           <div className="grid gap-1">
             <Label>Tipo</Label>
-            <Select value={type} onValueChange={(v) => setType(v as "ADVANCE" | "REFUND" | "MANUAL")}>
+            <Select value={type} onValueChange={(v) => setType(v as Adjustment["type"])}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="ADVANCE">Anticipo (resta en la liquidación)</SelectItem>
@@ -172,7 +174,17 @@ function NewAdjustmentDialog({ barbers, onClose, onCreated }: { barbers: Array<{
         </div>
         <div className="mt-4 flex justify-end gap-2">
           <Button variant="outline" onClick={onClose}>Cancelar</Button>
-          <Button disabled={busy || !barberId || !amount || Number(amount) === 0 || reason.trim().length < 3} onClick={create} className="bg-ink hover:bg-ink/80 text-ivory">
+          <Button
+            disabled={!barberId || !amount || Number(amount) === 0 || reason.trim().length < 3}
+            onClick={() => {
+              const n = Number(amount);
+              if (!Number.isFinite(n) || n === 0) { setErr("Valor inválido"); return; }
+              if (type === "ADVANCE" && n < 0) { setErr("Para anticipo usa valor positivo (se resta automáticamente)"); return; }
+              onCreate(barberId, type, n, reason);
+              onCreated();
+            }}
+            className="bg-ink hover:bg-ink/80 text-ivory"
+          >
             Registrar ajuste
           </Button>
         </div>
@@ -181,27 +193,54 @@ function NewAdjustmentDialog({ barbers, onClose, onCreated }: { barbers: Array<{
   );
 }
 
-type ExpenseRow = {
-  id: string;
-  description: string;
-  category: string;
-  amount: number;
-  method: string | null;
-  notes: string | null;
-  spentAt: string;
-  createdBy: { name: string };
-};
-
+// ============================================================ GASTOS
 export function ExpensesView() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
-  const q = useData<{ expenses: ExpenseRow[]; categories: string[] }>(`/api/expenses${from || to ? `?${from ? `from=${from}` : ""}${from && to ? "&" : ""}${to ? `to=${to}` : ""}` : ""}`, [from, to]);
+  const [tick, setTick] = useState(0);
   const [open, setOpen] = useState(false);
-  const [editFor, setEditFor] = useState<ExpenseRow | null>(null);
+  const [editFor, setEditFor] = useState<Expense | null>(null);
 
-  const total = (q.data?.expenses ?? []).reduce((s, e) => s + e.amount, 0);
+  useEffect(() => {
+    const h = () => setTick((n) => n + 1);
+    window.addEventListener("melo:db-changed", h);
+    return () => window.removeEventListener("melo:db-changed", h);
+  }, []);
+
+  const db = getDB();
+  const expenses = useMemo(() => {
+    return db.expenses
+      .filter((e) => (!from || e.spentAt >= `${from}T00:00:00-05:00`) && (!to || e.spentAt < new Date(new Date(`${to}T00:00:00-05:00`).getTime() + 24 * 3600 * 1000).toISOString()))
+      .sort((a, b) => b.spentAt.localeCompare(a.spentAt));
+  }, [tick, from, to]);
+
+  const total = expenses.reduce((s, e) => s + e.amount, 0);
   const byCat = new Map<string, number>();
-  for (const e of q.data?.expenses ?? []) byCat.set(e.category, (byCat.get(e.category) ?? 0) + e.amount);
+  for (const e of expenses) byCat.set(e.category, (byCat.get(e.category) ?? 0) + e.amount);
+
+  function save(expense: Omit<Expense, "id">, existingId?: string) {
+    mutateDB((d) => {
+      if (existingId) {
+        const idx = d.expenses.findIndex((e) => e.id === existingId);
+        if (idx >= 0) d.expenses[idx] = { ...d.expenses[idx], ...expense };
+      } else {
+        d.expenses.unshift({ ...expense, id: cuid("exp") });
+      }
+    });
+    audit("EXPENSE", existingId ?? "new", existingId ? "UPDATE" : "CREATE", "Propietario", null, expense);
+    setTick((n) => n + 1);
+    toast({ title: existingId ? "Gasto actualizado" : "Gasto registrado" });
+  }
+
+  function remove(id: string) {
+    const before = db.expenses.find((e) => e.id === id);
+    mutateDB((d) => {
+      d.expenses = d.expenses.filter((e) => e.id !== id);
+    });
+    audit("EXPENSE", id, "DELETE", "Propietario", before, null);
+    setTick((n) => n + 1);
+    toast({ title: "Gasto eliminado", description: "Queda en auditoría con el valor anterior." });
+  }
 
   return (
     <div>
@@ -226,12 +265,9 @@ export function ExpensesView() {
         </div>
       </div>
 
-      {q.loading ? <LoadingBlock /> : null}
-      {q.error ? <ErrorBlock message={q.error} onRetry={q.reload} /> : null}
-      {q.data && q.data.expenses.length === 0 ? (
+      {expenses.length === 0 ? (
         <EmptyState icon={<Receipt className="h-8 w-8" />} title="Sin gastos en el rango" sub="Registra alquiler, insumos, servicios y demás egresos." />
-      ) : null}
-      {q.data && q.data.expenses.length > 0 ? (
+      ) : (
         <div className="overflow-x-auto rounded-xl border border-ink/10 bg-ivory">
           <Table>
             <TableHeader>
@@ -245,30 +281,17 @@ export function ExpensesView() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {q.data.expenses.map((e) => (
+              {expenses.map((e) => (
                 <TableRow key={e.id}>
                   <TableCell className="text-sm">{fmtDateMedium(new Date(e.spentAt))}</TableCell>
                   <TableCell className="text-sm">{e.description}{e.notes ? <span className="block text-xs text-ink-soft">{e.notes}</span> : null}</TableCell>
                   <TableCell><Chip>{CATEGORY_LABEL[e.category] ?? e.category}</Chip></TableCell>
                   <TableCell className="text-right font-semibold tabular-nums">{cop(e.amount)}</TableCell>
-                  <TableCell className="text-sm text-ink-soft">{e.createdBy.name}</TableCell>
+                  <TableCell className="text-sm text-ink-soft">{e.createdByName}</TableCell>
                   <TableCell>
                     <div className="flex gap-1">
                       <Button size="sm" variant="ghost" className="h-7" onClick={() => setEditFor(e)}><Pencil className="h-3 w-3" /></Button>
-                      <Button
-                        size="sm" variant="ghost" className="h-7 text-melo-dark"
-                        onClick={async () => {
-                          try {
-                            await api(`/api/expenses/${e.id}`, { method: "DELETE" });
-                            toast({ title: "Gasto eliminado", description: "Queda en auditoría con el valor anterior." });
-                            q.reload();
-                          } catch (err) {
-                            toast({ title: "No se pudo eliminar", description: err instanceof Error ? err.message : "", variant: "destructive" });
-                          }
-                        }}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
+                      <Button size="sm" variant="ghost" className="h-7 text-melo-dark" onClick={() => remove(e.id)}><Trash2 className="h-3 w-3" /></Button>
                     </div>
                   </TableCell>
                 </TableRow>
@@ -276,53 +299,31 @@ export function ExpensesView() {
             </TableBody>
           </Table>
         </div>
-      ) : null}
+      )}
 
       {open ? (
-        <ExpenseDialog categories={q.data?.categories ?? []} onClose={() => setOpen(false)} onSaved={() => { setOpen(false); q.reload(); toast({ title: "Gasto registrado" }); }} />
+        <ExpenseDialog onClose={() => setOpen(false)} onSaved={(data) => { setOpen(false); save(data); }} />
       ) : null}
       {editFor ? (
-        <ExpenseDialog categories={q.data?.categories ?? []} existing={editFor} onClose={() => setEditFor(null)} onSaved={() => { setEditFor(null); q.reload(); toast({ title: "Gasto actualizado" }); }} />
+        <ExpenseDialog existing={editFor} onClose={() => setEditFor(null)} onSaved={(data) => { setEditFor(null); save(data, editFor.id); }} />
       ) : null}
     </div>
   );
 }
 
 function ExpenseDialog({
-  categories, existing, onClose, onSaved,
+  existing, onClose, onSaved,
 }: {
-  categories: string[];
-  existing?: ExpenseRow | null;
+  existing?: Expense | null;
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: (data: Omit<Expense, "id">) => void;
 }) {
   const [description, setDescription] = useState(existing?.description ?? "");
-  const [category, setCategory] = useState(existing?.category ?? "INSUMOS");
+  const [category, setCategory] = useState<Expense["category"]>(existing?.category ?? "INSUMOS");
   const [amount, setAmount] = useState(existing ? String(existing.amount) : "");
   const [date, setDate] = useState(existing ? existing.spentAt.slice(0, 10) : "");
   const [notes, setNotes] = useState(existing?.notes ?? "");
-  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-
-  async function save() {
-    setBusy(true);
-    setErr(null);
-    try {
-      const body = JSON.stringify({
-        description, category, amount: Number(amount), notes: notes || null,
-        date: date || undefined,
-      });
-      await api(existing ? `/api/expenses/${existing.id}` : "/api/expenses", {
-        method: existing ? "PATCH" : "POST",
-        body,
-      });
-      onSaved();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Error");
-    } finally {
-      setBusy(false);
-    }
-  }
 
   return (
     <Dialog open onOpenChange={(o) => (o ? undefined : onClose())}>
@@ -336,10 +337,10 @@ function ExpenseDialog({
           <div className="grid gap-1 sm:grid-cols-2">
             <div className="grid gap-1">
               <Label>Categoría</Label>
-              <Select value={category} onValueChange={setCategory}>
+              <Select value={category} onValueChange={(v) => setCategory(v as Expense["category"])}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {categories.map((c) => <SelectItem key={c} value={c}>{CATEGORY_LABEL[c] ?? c}</SelectItem>)}
+                  {Object.keys(CATEGORY_LABEL).map((c) => <SelectItem key={c} value={c}>{CATEGORY_LABEL[c]}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -348,11 +349,9 @@ function ExpenseDialog({
               <Input type="number" min={1} value={amount} onChange={(e) => setAmount(e.target.value)} />
             </div>
           </div>
-          <div className="grid gap-1 sm:grid-cols-2">
-            <div className="grid gap-1">
-              <Label>Fecha</Label>
-              <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-            </div>
+          <div className="grid gap-1">
+            <Label>Fecha</Label>
+            <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           </div>
           <div className="grid gap-1">
             <Label>Notas (opcional)</Label>
@@ -362,7 +361,20 @@ function ExpenseDialog({
         </div>
         <div className="mt-4 flex justify-end gap-2">
           <Button variant="outline" onClick={onClose}>Cancelar</Button>
-          <Button disabled={busy || !description || !amount} onClick={save} className="bg-ink hover:bg-ink/80 text-ivory">
+          <Button
+            disabled={!description || !amount}
+            onClick={() => {
+              const n = Number(amount);
+              if (!Number.isFinite(n) || n <= 0) { setErr("Monto inválido"); return; }
+              onSaved({
+                description, category, amount: Math.round(n),
+                method: null, notes: notes || null,
+                spentAt: date ? new Date(`${date}T12:00:00-05:00`).toISOString() : new Date().toISOString(),
+                createdByName: "Propietario",
+              });
+            }}
+            className="bg-ink hover:bg-ink/80 text-ivory"
+          >
             {existing ? "Guardar cambios" : "Registrar gasto"}
           </Button>
         </div>
