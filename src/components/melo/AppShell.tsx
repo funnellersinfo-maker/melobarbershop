@@ -18,7 +18,7 @@ import { fmtDateMedium, timeHMInBogota } from "@/lib/time";
 export type ViewId =
   | "dashboard" | "agenda" | "payments" | "commissions" | "settlements" | "adjustments"
   | "expenses" | "catalog" | "workers" | "reports" | "notifications" | "audit" | "settings"
-  | "social" | "myProfile" | "myAvailability";
+  | "social" | "myProfile" | "myAvailability" | "myCommissions";
 
 export function AppShell({
   user,
@@ -188,11 +188,12 @@ export function AppShell({
       </header>
 
       <div className="mx-auto flex w-full max-w-7xl flex-1 gap-6 overflow-x-clip px-4 py-6">
-        <nav className="sticky top-24 hidden h-fit w-60 shrink-0 flex-col gap-1 rounded-2xl border border-ink/10 bg-ivory p-3 lg:flex">
+        <nav className="sticky top-24 hidden h-fit w-60 shrink-0 flex-col gap-1 rounded-2xl border border-ink/10 bg-ivory p-3 lg:flex" data-tour-id="nav">
           {visible.map((it) => (
             <button
               key={it.id}
               onClick={() => setView(it.id)}
+              data-tour-id={it.id}
               className={cn(
                 "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition",
                 view === it.id ? "bg-ink text-ivory" : "text-ink-soft hover:bg-cream hover:text-ink"
@@ -207,11 +208,12 @@ export function AppShell({
         </nav>
 
         <div className="min-w-0 max-w-full flex-1 overflow-x-clip">
-          <div className="mb-4 flex w-full max-w-full gap-2 overflow-x-auto overscroll-x-contain pb-1 nice-scroll lg:hidden">
+          <div className="mb-4 flex w-full max-w-full gap-2 overflow-x-auto overscroll-x-contain pb-1 nice-scroll lg:hidden" data-tour-id="nav">
             {visible.map((it) => (
               <button
                 key={it.id}
                 onClick={() => setView(it.id)}
+                data-tour-id={it.id}
                 className={cn(
                   "whitespace-nowrap rounded-full border px-4 py-2 text-sm font-medium transition",
                   view === it.id ? "border-ink bg-ink text-ivory" : "border-ink/15 bg-ivory text-ink-soft"

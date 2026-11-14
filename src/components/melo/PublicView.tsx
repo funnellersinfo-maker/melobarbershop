@@ -631,7 +631,7 @@ function ReviewForm({ barberId, onDone }: { barberId: string; onDone: () => void
 }
 
 // ============================================================ VISTA PÚBLICA
-export function PublicView({ onLogin }: { onLogin: () => void }) {
+export function PublicView({ onLogin, onRegister }: { onLogin: () => void; onRegister?: () => void }) {
   const admin = getAdminData();
   const db = getDB();
   const site = admin.site;
@@ -919,6 +919,16 @@ export function PublicView({ onLogin }: { onLogin: () => void }) {
         <div className="pole h-1.5" aria-hidden />
         <div className="flex items-center justify-center gap-4 py-3 text-xs text-cream/50">
           <span>© {new Date().getFullYear()} {site.businessName}</span>
+          {onRegister ? (
+            <button
+              onClick={onRegister}
+              aria-label="Registro de barberos con invitación"
+              title="Soy barbero y tengo una invitación"
+              className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-cream/35 transition hover:bg-cream/10 hover:text-cream/70"
+            >
+              <Scissors className="h-3.5 w-3.5" /> Soy barbero
+            </button>
+          ) : null}
           <button
             onClick={onLogin}
             aria-label="Configuración de la barbería"

@@ -3,10 +3,12 @@
 // Sin sesión: sitio público con reservas. Con sesión: panel por rol.
 // Persistencia 100% local (localStorage) — sin backend.
 import { useEffect, useState } from "react";
-import { getSession, logout, type SessionUser } from "@/lib/store";
+import { getSession, getOnboarding, logout, type SessionUser } from "@/lib/store";
 import { setupNotificationPersistence, ensureServiceWorker } from "@/lib/notify-client";
 import { PublicView } from "@/components/melo/PublicView";
 import { LoginView } from "@/components/melo/LoginView";
+import { RegisterView } from "@/components/melo/RegisterView";
+import { FirstTimeTour } from "@/components/melo/FirstTimeTour";
 import { AppShell, type ViewId } from "@/components/melo/AppShell";
 import { AgendaView } from "@/components/melo/AgendaView";
 import { OwnerDashboard, BarberDashboard } from "@/components/melo/Dashboards";
@@ -23,14 +25,17 @@ import { LoadingBlock } from "@/components/melo/ui";
 export default function Page() {
   const [checking, setChecking] = useState(true);
   const [user, setUser] = useState<SessionUser | null>(null);
-  const [mode, setMode] = useState<"public" | "login">("public");
+  const [mode, setMode] = useState<"public" | "login" | "register">("public");
   const [view, setView] = useState<string>("dashboard");
+  const [tourActive, setTourActive] = useState(false);
 
   useEffect(() => {
     // cargar store (seed) antes de renderizar para evitar parpadeos
     const s = getSession();
     setUser(s);
     if (s && s.role === "BARBER") setView("dashboard");
+    // tour obligatorio solo la primera vez que el barbero entra
+    if (s && s.role === "BARBER" && !getOnboarding().tourDone) setTourActive(true);
     setChecking(false);
 
     // notificaciones push persistentes + service worker
@@ -50,6 +55,7 @@ export default function Page() {
     setUser(null);
     setMode("public");
     setView("dashboard");
+    setTourActive(false);
   }
 
   if (checking) {
@@ -62,9 +68,27 @@ export default function Page() {
 
   if (!user) {
     if (mode === "login") {
-      return <LoginView onBack={() => setMode("public")} onLogged={(u) => { setUser(u); setView("dashboard"); }} />;
+      return (
+        <LoginView
+          onBack={() => setMode("public")}
+          onLogged={(u) => { setUser(u); setView("dashboard"); }}
+          onRegister={() => setMode("register")}
+        />
+      );
     }
-    return <PublicView onLogin={() => setMode("login")} />;
+    if (mode === "register") {
+      return (
+        <RegisterView
+          onBack={() => setMode("public")}
+          onRegistered={(u) => {
+            setUser(u);
+            setView("dashboard");
+            setTourActive(true); // el tour arranca apenas entra
+          }}
+        />
+      );
+    }
+    return <PublicView onLogin={() => setMode("login")} onRegister={() => setMode("register")} />;
   }
 
   return (
@@ -111,6 +135,14 @@ export default function Page() {
             return user.role === "OWNER" ? <OwnerDashboard go={(v) => setView(v)} /> : <BarberDashboard user={user} />;
         }
       })()}
+      {/* tour de primera vez (obligatorio): burbujas sobre las secciones */}
+      {tourActive && user.role === "BARBER" ? (
+        <FirstTimeTour
+          user={user}
+          setView={(v) => setView(v)}
+          onFinish={() => setTourActive(false)}
+        />
+      ) : null}
     </AppShell>
   );
 }
