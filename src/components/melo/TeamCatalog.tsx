@@ -7,7 +7,6 @@ import {
   getDB, mutateDB, audit, cuid, barberAccessCode,
   type SessionUser, type Service, type Barber, type Availability,
 } from "@/lib/store";
-import { addInvite, getInvites, isValidEmail, invitationCodeForEmail, removeInvite } from "@/lib/invite";
 import { SectionTitle, EmptyState, Chip } from "@/components/melo/ui";
 import { BarberCommissionHistory } from "@/components/melo/CommissionsView";
 import { Button } from "@/components/ui/button";
@@ -21,7 +20,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
-import { Scissors, Plus, Pencil, Clock, Users, KeyRound, CalendarDays, History, Camera, Copy, Star, Trophy, Mail, Send, Trash2 } from "lucide-react";
+import { Scissors, Plus, Pencil, Clock, Users, KeyRound, CalendarDays, History, Camera, Copy, Star, Trophy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LEVELS, barberLevel } from "@/components/melo/Dashboards";
 
@@ -213,10 +212,7 @@ export function WorkersView({ user }: { user: SessionUser }) {
         sub="Barberos, códigos de acceso, permisos (los controlas tú), servicios autorizados y disponibilidad semanal."
         right={<Button onClick={() => setNewOpen(true)} className="bg-melo hover:bg-melo-dark text-ivory"><Plus className="mr-1 h-4 w-4" /> Nuevo barbero</Button>}
       />
-
-      <InvitesPanel />
-
-      {workers.length === 0 ? <EmptyState icon={<Users className="h-8 w-8" />} title="Sin barberos" sub="Crea el primero o envíale una invitación para que se registre solo." /> : null}
+      {workers.length === 0 ? <EmptyState icon={<Users className="h-8 w-8" />} title="Sin barberos" sub="Crea el primero." /> : null}
 
       {workers.length > 0 ? (
         <Tabs value={active} onValueChange={setTab}>
@@ -474,115 +470,6 @@ function WorkerServices({ worker, services, onChanged }: { worker: Barber; servi
         ))}
       </div>
       <Button onClick={save} className="mt-4 bg-ink hover:bg-ink/80 text-ivory">Guardar autorizaciones</Button>
-    </div>
-  );
-}
-
-// ============================================================ INVITACIONES (registro con correo + código)
-function InvitesPanel() {
-  const [tick, setTick] = useState(0);
-  const [email, setEmail] = useState("");
-  const [err, setErr] = useState<string | null>(null);
-  const [copied, setCopied] = useState<string | null>(null);
-
-  useEffect(() => {
-    const h = () => setTick((n) => n + 1);
-    window.addEventListener("melo:db-changed", h);
-    return () => window.removeEventListener("melo:db-changed", h);
-  }, []);
-
-  const invites = getInvites();
-  const db = getDB();
-
-  function generate() {
-    setErr(null);
-    if (!isValidEmail(email)) {
-      setErr("Escribe un correo válido (ej: barbero@gmail.com).");
-      return;
-    }
-    addInvite(email);
-    setEmail("");
-    setTick((n) => n + 1);
-    toast({ title: "Invitación generada", description: "Compártele el código al barbero: correo y código deben coincidir en su registro." });
-  }
-
-  function copyInv(text: string, id: string) {
-    void navigator.clipboard?.writeText(text);
-    setCopied(id);
-    setTimeout(() => setCopied(null), 1600);
-  }
-
-  return (
-    <div className="mb-6 rounded-2xl border border-brass/40 bg-gradient-to-r from-brass/10 to-ivory p-4 sm:p-5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Mail className="h-4 w-4 text-brass-dark" />
-          <span className="font-display text-base font-bold">Invitar barbero a registrarse</span>
-        </div>
-        <span className="text-xs text-ink-soft">El barbero se registra solo, con su correo y su código</span>
-      </div>
-      <p className="mt-1.5 text-xs text-ink-soft">
-        Ingresa el correo que va a usar el barbero. Generamos un <b>código único</b> para ese correo: en el registro ambos deben coincidir
-        para que se desbloquee su cuenta (con su tour de bienvenida).
-      </p>
-      <div className="mt-3 flex flex-wrap gap-2">
-        <Input
-          type="email"
-          inputMode="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); generate(); } }}
-          placeholder="correo del barbero (ej: juan@gmail.com)"
-          className="min-w-0 flex-1 sm:max-w-sm"
-          aria-label="Correo del barbero a invitar"
-        />
-        <Button onClick={generate} className="bg-brass text-ink hover:bg-brass/80">
-          <Send className="mr-1 h-4 w-4" /> Generar código
-        </Button>
-      </div>
-      {err ? <div className="mt-2 rounded-lg border border-melo/40 bg-melo/10 px-3 py-2 text-sm text-melo-dark">{err}</div> : null}
-
-      {invites.length > 0 ? (
-        <div className="mt-4 grid gap-2">
-          {invites.map((inv) => {
-            const registered = db.barbers.some((b) => (b.email ?? "").toLowerCase() === inv.email);
-            return (
-              <div key={inv.id} className={cn(
-                "flex flex-wrap items-center gap-2 rounded-xl border p-3 text-sm",
-                registered ? "border-good/40 bg-good/5" : "border-ink/10 bg-cream"
-              )}>
-                <Mail className="h-4 w-4 shrink-0 text-ink-soft" />
-                <span className="min-w-0 break-all font-medium">{inv.email}</span>
-                <code className="rounded-lg bg-ink px-2.5 py-1 font-mono text-xs tracking-[0.15em] text-ivory">{inv.code}</code>
-                <button
-                  onClick={() => copyInv(`Correo: ${inv.email}\nCódigo: ${inv.code}\nRegístrate en https://melobarbershop.pages.dev → «Soy barbero»`, inv.id)}
-                  className="inline-flex items-center gap-1 rounded-lg border border-ink/15 bg-ivory px-2.5 py-1.5 text-xs font-semibold transition hover:bg-cream"
-                >
-                  <Copy className="h-3.5 w-3.5" /> {copied === inv.id ? "¡Copiado!" : "Copiar datos"}
-                </button>
-                {registered ? (
-                  <Chip className="border-good/50 text-good">✓ Ya se registró</Chip>
-                ) : (
-                  <Chip className="border-brass/50 text-brass-dark">Pendiente de registro</Chip>
-                )}
-                {!registered ? (
-                  <button
-                    onClick={() => { removeInvite(inv.id); setTick((n) => n + 1); }}
-                    className="ml-auto inline-flex items-center gap-1 rounded-lg p-1.5 text-ink-soft transition hover:bg-melo/10 hover:text-melo-dark"
-                    aria-label={`Eliminar invitación de ${inv.email}`}
-                    title="Eliminar invitación"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <p className="mt-3 text-xs text-ink-soft">Aún no has generado invitaciones. La primera aparecerá aquí.</p>
-      )}
-      {tick < 0 ? null : null}
     </div>
   );
 }

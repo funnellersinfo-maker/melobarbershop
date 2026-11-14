@@ -6,19 +6,11 @@ import { loginWithCode, type SessionUser } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Logo, PoleStripe } from "@/components/melo/ui";
-import { ArrowLeft, KeyRound, Scissors, UserPlus } from "lucide-react";
+import { ArrowLeft, KeyRound, Scissors } from "lucide-react";
 
 export type { SessionUser };
 
-export function LoginView({
-  onBack,
-  onLogged,
-  onRegister,
-}: {
-  onBack: () => void;
-  onLogged: (user: SessionUser) => void;
-  onRegister?: () => void;
-}) {
+export function LoginView({ onBack, onLogged }: { onBack: () => void; onLogged: (user: SessionUser) => void }) {
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -84,15 +76,6 @@ export function LoginView({
               {busy ? "Verificando…" : "Ingresar"} <Scissors className="ml-2 h-4 w-4" />
             </Button>
           </form>
-
-          {onRegister ? (
-            <div className="mt-5 border-t border-ink/10 pt-4 text-center">
-              <p className="text-xs text-ink-soft">¿Te invitó el dueño y aún no tienes cuenta?</p>
-              <Button variant="outline" onClick={onRegister} className="mt-2 w-full border-brass/50 text-brass-dark hover:bg-brass/10">
-                <UserPlus className="mr-2 h-4 w-4" /> Registrarme con mi invitación
-              </Button>
-            </div>
-          ) : null}
         </div>
       </main>
     </div>

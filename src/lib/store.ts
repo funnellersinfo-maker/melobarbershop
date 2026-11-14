@@ -23,7 +23,6 @@ export type Barber = {
   specialty: string;
   permissions: Record<string, boolean>;
   createdAt: string;
-  email?: string | null; // correo con el que se registró (si fue por invitación)
 };
 
 export type Service = {
@@ -599,82 +598,4 @@ export function loginWithCode(code: string): SessionUser | null {
 
 export function logout() {
   setSession(null);
-}
-
-// ============================================================ ONBOARDING (tour primera vez)
-export const ONBOARDING_KEY = "melo.onboarding.v1";
-
-export type Onboarding = {
-  tourDone: boolean; // ya completó el tour obligatorio de primera vez
-  tourStep: number; // paso actual (por si cierra a mitad, retoma donde iba)
-};
-
-export function getOnboarding(): Onboarding {
-  if (typeof window === "undefined") return { tourDone: false, tourStep: 0 };
-  try {
-    const raw = localStorage.getItem(ONBOARDING_KEY);
-    if (!raw) return { tourDone: false, tourStep: 0 };
-    const o = JSON.parse(raw) as Partial<Onboarding>;
-    return { tourDone: !!o.tourDone, tourStep: Number(o.tourStep) || 0 };
-  } catch {
-    return { tourDone: false, tourStep: 0 };
-  }
-}
-
-export function setOnboarding(patch: Partial<Onboarding>) {
-  if (typeof window === "undefined") return;
-  const next = { ...getOnboarding(), ...patch };
-  localStorage.setItem(ONBOARDING_KEY, JSON.stringify(next));
-  window.dispatchEvent(new CustomEvent("melo:onboarding"));
-}
-
-// ============================================================ REGISTRO (barbero por invitación)
-export type RegisterInput = {
-  name: string;
-  email: string;
-  accessCode: string; // la clave que el barbero usará para ingresar después
-  specialty?: string;
-};
-
-/** Crea la cuenta de barbero desde el registro público (con invitación válida). */
-export function registerBarber(input: RegisterInput): { ok: true; barberId: string } | { ok: false; error: string } {
-  const name = input.name.trim();
-  const email = input.email.trim().toLowerCase();
-  const accessCode = input.accessCode.trim();
-  if (name.length < 3) return { ok: false, error: "Escribe tu nombre completo (mínimo 3 letras)." };
-  if (accessCode.length < 4) return { ok: false, error: "Tu clave de acceso debe tener al menos 4 caracteres." };
-
-  const db = getDB();
-  if (db.barbers.some((b) => (b.email ?? "").toLowerCase() === email && email !== "")) {
-    return { ok: false, error: "Ya existe una cuenta registrada con ese correo." };
-  }
-
-  let barberId = "";
-  mutateDB((d) => {
-    const id = cuid("b");
-    barberId = id;
-    d.barbers.push({
-      id,
-      name,
-      bio: "",
-      photo: null,
-      code: accessCode,
-      active: true,
-      phone: null,
-      specialty: (input.specialty ?? "").trim(),
-      permissions: { "payments.register": true, "commissions.view": true, "settlements.view": true, "profile.edit": true },
-      createdAt: new Date().toISOString(),
-      email,
-    });
-    // disponibilidad por defecto: martes a sábado
-    d.availability[id] = [];
-    for (let day = 2; day <= 6; day++) {
-      d.availability[id].push({ dayOfWeek: day, startTime: "10:00", endTime: "13:00", active: true });
-      d.availability[id].push({ dayOfWeek: day, startTime: "14:00", endTime: "19:00", active: true });
-    }
-    // autorizar todos los servicios activos
-    for (const s of d.services) if (s.active) d.barberServices[`${id}:${s.id}`] = true;
-  });
-  audit("USER", name, "REGISTER_BARBER", name, null, { name, email });
-  return { ok: true, barberId };
 }
