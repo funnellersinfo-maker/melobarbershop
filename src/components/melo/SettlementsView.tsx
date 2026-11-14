@@ -153,7 +153,7 @@ export function SettlementsView({ user }: { user: SessionUser }) {
 
       {detailSettlement ? (
         <Dialog open onOpenChange={(o) => (o ? undefined : setDetail(null))}>
-          <DialogContent className="max-h-90 overflow-y-auto nice-scroll sm:max-w-2xl">
+          <DialogContent className="sm:max-w-2xl">
             <DialogHeader><DialogTitle>Detalle · {detailSettlement.code}</DialogTitle></DialogHeader>
             <Table>
               <TableHeader>
@@ -281,7 +281,7 @@ function NewSettlementDialog({ onClose, onCreated }: { onClose: () => void; onCr
 
   return (
     <Dialog open onOpenChange={(o) => (o ? undefined : onClose())}>
-      <DialogContent className="max-h-92 overflow-y-auto nice-scroll sm:max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader><DialogTitle>Nueva liquidación</DialogTitle></DialogHeader>
         <div className="grid gap-1">
           <Label>Barbero</Label>

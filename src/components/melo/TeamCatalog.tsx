@@ -216,7 +216,7 @@ export function WorkersView({ user }: { user: SessionUser }) {
 
       {workers.length > 0 ? (
         <Tabs value={active} onValueChange={setTab}>
-          <TabsList className="flex-wrap bg-ivory">
+          <TabsList className="bg-ivory">
             {workers.map((w) => (
               <TabsTrigger key={w.id} value={w.id}>
                 {w.name}
@@ -264,7 +264,7 @@ function WorkerPanel({ worker, onChanged, onHistory }: { worker: Barber; onChang
 
   return (
     <Tabs value={tab} onValueChange={setTab}>
-      <TabsList className="bg-ivory">
+      <TabsList className="flex-wrap bg-ivory">
         <TabsTrigger value="perfil">Perfil y permisos</TabsTrigger>
         <TabsTrigger value="servicios">Servicios autorizados</TabsTrigger>
         <TabsTrigger value="disponibilidad">Disponibilidad</TabsTrigger>
@@ -716,7 +716,7 @@ export function AuditView() {
 
       {openFor ? (
         <Dialog open onOpenChange={(o) => (o ? undefined : setOpenFor(null))}>
-          <DialogContent className="max-h-90 overflow-y-auto nice-scroll sm:max-w-3xl">
+          <DialogContent className="sm:max-w-3xl">
             <DialogHeader><DialogTitle>{openFor.title}</DialogTitle></DialogHeader>
             <div className="grid gap-4 md:grid-cols-2">
               <div>

@@ -111,7 +111,7 @@ export function AppShell({
                   ) : null}
                 </Button>
               </PopoverTrigger>
-              <PopoverContent align="end" className="w-96 p-0">
+              <PopoverContent align="end" className="w-[calc(100vw-1.5rem)] max-w-96 p-0">
                 <div className="flex items-center justify-between border-b border-ink/10 px-4 py-3">
                   <span className="font-display font-bold">Notificaciones</span>
                   <button onClick={markAllRead} className="inline-flex items-center gap-1 text-xs font-medium text-brass-dark hover:underline">
@@ -187,7 +187,7 @@ export function AppShell({
         <PoleStripe className="rounded-none" />
       </header>
 
-      <div className="mx-auto flex w-full max-w-7xl flex-1 gap-6 px-4 py-6">
+      <div className="mx-auto flex w-full max-w-7xl flex-1 gap-6 overflow-x-clip px-4 py-6">
         <nav className="sticky top-24 hidden h-fit w-60 shrink-0 flex-col gap-1 rounded-2xl border border-ink/10 bg-ivory p-3 lg:flex">
           {visible.map((it) => (
             <button
@@ -206,8 +206,8 @@ export function AppShell({
           ))}
         </nav>
 
-        <div className="min-w-0 flex-1">
-          <div className="mb-4 flex gap-2 overflow-x-auto pb-1 nice-scroll lg:hidden">
+        <div className="min-w-0 max-w-full flex-1 overflow-x-clip">
+          <div className="mb-4 flex w-full max-w-full gap-2 overflow-x-auto overscroll-x-contain pb-1 nice-scroll lg:hidden">
             {visible.map((it) => (
               <button
                 key={it.id}

@@ -346,7 +346,7 @@ export function CommissionsView({ user }: { user: SessionUser }) {
 
       {historyFor ? (
         <Dialog open onOpenChange={(o) => (o ? undefined : setHistoryFor(null))}>
-          <DialogContent className="max-h-90 overflow-y-auto nice-scroll sm:max-w-2xl">
+          <DialogContent className="sm:max-w-2xl">
             <DialogHeader><DialogTitle>Historial de reglas de comisión</DialogTitle></DialogHeader>
             <p className="text-sm text-ink-soft">Cada cambio cierra la versión anterior y abre una nueva. Las comisiones usan la versión vigente en el momento de completar, nunca las futuras.</p>
             <Table>
@@ -535,7 +535,7 @@ export function BarberCommissionHistory({ barberId, onClose }: { barberId: strin
 
   return (
     <Dialog open onOpenChange={(o) => (o ? undefined : onClose())}>
-      <DialogContent className="max-h-92 overflow-y-auto nice-scroll sm:max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Historial de comisiones pagadas · {barber?.name}</DialogTitle>
         </DialogHeader>

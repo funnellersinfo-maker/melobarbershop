@@ -169,3 +169,78 @@
 .nice-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* ============================================================
+   MÓVIL A PRUEBA DE TODO: ni corrimiento, ni zoom, ni distorsión
+   ============================================================ */
+
+/* La página nunca se desplaza lateralmente: ningún popup, tabla o elemento
+   puede arrastrar todo el sitio hacia un lado (el clásico "corrido"). */
+html {
+  overflow-x: hidden;
+  overflow-x: clip;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* Toques instantáneos y sin zoom por doble toque en botones y enlaces */
+button,
+[role="button"],
+a,
+summary {
+  touch-action: manipulation;
+}
+
+/* iOS/Android: el navegador NO hace zoom automático al enfocar un campo
+   (ocurre cuando la letra del input es menor a 16px en pantallas táctiles). */
+@media (hover: none) and (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: max(16px, 1em);
+  }
+}
+
+/* Diálogos: siempre caben en la pantalla visible y se adaptan en tiempo real
+   (dvh reacciona cuando la barra del navegador aparece/desaparece).
+   Fallback a vh para navegadores viejos, sin romper los max-h-* por diálogo. */
+@layer base {
+  [data-slot="dialog-content"] {
+    max-height: calc(100dvh - 1.5rem);
+    -webkit-overflow-scrolling: touch;
+  }
+  @supports not (height: 100dvh) {
+    [data-slot="dialog-content"] {
+      max-height: calc(100vh - 1.5rem);
+    }
+  }
+}
+
+/* Con un popup abierto, el fondo no rebota ni se arrastra (iOS rubber-band). */
+body:has([data-slot="dialog-overlay"][data-state="open"]),
+body:has([data-slot="sheet-overlay"][data-state="open"]) {
+  overscroll-behavior: none;
+}
+
+/* En pantallas táctiles pequeñas, las tablas dentro de popups se deslizan
+   solas en horizontal en lugar de estirar el cuadro. */
+[data-slot="dialog-content"] table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* Red de seguridad final: cualquier contenedor de la app que por su contenido
+   quede más ancho que la pantalla se recorta y no arrastra toda la página.
+   Los popups (position: fixed) no se ven afectados porque ya se auto-limitan. */
+body > div,
+main,
+section,
+footer,
+header {
+  max-width: 100vw;
+}
+main,
+footer {
+  overflow-x: clip;
+}

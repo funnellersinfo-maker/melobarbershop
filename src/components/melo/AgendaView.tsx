@@ -151,7 +151,7 @@ export function AgendaView({ user }: { user: SessionUser }) {
                 {list.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-ink/15 px-3 py-6 text-center text-sm text-ink-soft">Libre todo el día</div>
                 ) : (
-                  <div className="flex max-h-105 flex-col gap-2 overflow-y-auto pr-1 nice-scroll">
+                  <div className="flex max-h-[40dvh] flex-col gap-2 overflow-y-auto pr-1 nice-scroll">
                     {list.map((a) => {
                       const fin = appointmentFinancial(db, a.id);
                       const service = db.services.find((s) => s.id === a.serviceId);
@@ -660,7 +660,7 @@ export function NewAppointmentDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-90 overflow-y-auto nice-scroll sm:max-w-xl">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader><DialogTitle>Nueva cita manual</DialogTitle></DialogHeader>
         <p className="text-sm text-ink-soft">
           Registra citas presenciales o telefónicas. Se validan disponibilidad y solapamientos igual que las reservas web.

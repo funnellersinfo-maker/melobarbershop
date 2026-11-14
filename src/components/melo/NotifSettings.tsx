@@ -95,7 +95,7 @@ export function NotificationsView({ user }: { user: SessionUser }) {
       {notifications.length === 0 ? (
         <EmptyState icon={<Bell className="h-8 w-8" />} title="Sin notificaciones" sub="Cuando haya eventos aparecerán aquí." />
       ) : (
-        <div className="flex max-h-125 flex-col gap-2 overflow-y-auto pr-1 nice-scroll">
+        <div className="flex max-h-[55dvh] flex-col gap-2 overflow-y-auto pr-1 nice-scroll">
           {notifications.map((n) => (
             <div key={n.id} className={cn("rounded-xl border p-4", n.read ? "border-ink/10 bg-ivory opacity-75" : "border-brass/40 bg-brass/5")}>
               <div className="flex flex-wrap items-center gap-2">
