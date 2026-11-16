@@ -374,7 +374,33 @@ export type AdminData = {
   version: number;
   site: SiteConfig;
   notif: NotifConfig;
+  profile: OwnerProfile;
 };
+
+// ============================================================ PERFIL DEL PROPIETARIO (premium "Ronald")
+export type OwnerProfile = {
+  name: string; // nombre del administrador (se muestra en el panel)
+  manualXP: boolean; // premium: controlar el XP manualmente
+  xpOverride: number; // valor manual del XP
+  levelOverride: string | null; // premium: rango fijo ("Aprendiz"…"Leyenda") o null = automático
+};
+
+/** Nombre que activa el premium del administrador. */
+export const PREMIUM_OWNER_NAME = "ronald";
+
+export function seedOwnerProfile(): OwnerProfile {
+  return { name: "Propietario", manualXP: false, xpOverride: 0, levelOverride: null };
+}
+
+/** El premium solo existe para el administrador cuyo nombre sea exactamente "Ronald". */
+export function isOwnerPremium(p: OwnerProfile): boolean {
+  return p.name.trim().toLowerCase() === PREMIUM_OWNER_NAME;
+}
+
+/** XP automático del propietario: servicios completados en toda la barbería. */
+export function ownerAutoXP(db: DB): number {
+  return db.appointments.filter((a) => a.status === "COMPLETED").length;
+}
 
 export function seedAdminData(): AdminData {
   return {
@@ -429,6 +455,7 @@ export function seedAdminData(): AdminData {
       notifyOnPayment: true,
       notifyOnComplete: true,
     },
+    profile: seedOwnerProfile(),
   };
 }
 
@@ -480,7 +507,13 @@ export function getAdminData(): AdminData {
       if (!stored) return seedAdminData();
       // migración: rellenar campos nuevos con valores por defecto
       const base = seedAdminData();
-      return { ...stored, version: base.version, site: { ...base.site, ...stored.site }, notif: { ...base.notif, ...stored.notif } };
+      return {
+        ...stored,
+        version: base.version,
+        site: { ...base.site, ...stored.site },
+        notif: { ...base.notif, ...stored.notif },
+        profile: { ...base.profile, ...(stored.profile ?? {}) },
+      };
     };
     memAdmin = fallback();
     writeJSON(ADMIN_KEY, memAdmin);

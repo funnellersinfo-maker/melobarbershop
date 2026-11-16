@@ -3,7 +3,11 @@
 // membrete, secciones, FAQ), WhatsApp, notificaciones push y sonidos.
 // Nada técnico, todo agrupado y en lenguaje claro.
 import { useEffect, useState } from "react";
-import { getAdminData, saveAdminData, type SiteConfig, type NotifConfig } from "@/lib/store";
+import {
+  getAdminData, saveAdminData, getDB, isOwnerPremium, ownerAutoXP, seedOwnerProfile,
+  type SiteConfig, type NotifConfig, type OwnerProfile,
+} from "@/lib/store";
+import { LEVELS, barberLevel } from "@/components/melo/Dashboards";
 import { permissionState, playPreviewSound, setupNotificationPersistence, type NotifPermState } from "@/lib/notify-client";
 import { SectionTitle, Chip } from "@/components/melo/ui";
 import { Button } from "@/components/ui/button";
@@ -15,6 +19,7 @@ import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import {
   Save, ImageIcon, Video, Trash2, Plus, Volume2, BellRing, Smartphone, ShieldAlert, MessageCircle, Sparkles, ListChecks,
+  User, Zap, Crown, Lock,
 } from "lucide-react";
 
 const SOUNDS: Array<{ id: NotifConfig["sound"]; label: string }> = [
@@ -59,6 +64,7 @@ function fileToDataURL(file: File, maxSize = 1600): Promise<string> {
 export function SettingsView() {
   const [site, setSite] = useState<SiteConfig | null>(null);
   const [notif, setNotif] = useState<NotifConfig | null>(null);
+  const [profile, setProfile] = useState<OwnerProfile | null>(null);
   const [perm, setPerm] = useState<NotifPermState>("default");
   const [busy, setBusy] = useState(false);
 
@@ -66,13 +72,15 @@ export function SettingsView() {
     const admin = getAdminData();
     setSite(admin.site);
     setNotif(admin.notif);
+    setProfile(admin.profile ?? seedOwnerProfile());
     setupNotificationPersistence(setPerm);
   }, []);
 
-  if (!site || !notif) return null;
+  if (!site || !notif || !profile) return null;
 
   const siteCfg: SiteConfig = site;
   const notifCfg: NotifConfig = notif;
+  const profileCfg: OwnerProfile = profile;
 
   function set<K extends keyof SiteConfig>(k: K, v: SiteConfig[K]) {
     setSite((s) => (s ? { ...s, [k]: v } : s));
@@ -81,10 +89,14 @@ export function SettingsView() {
     setNotif((n) => (n ? { ...n, [k]: v } : n));
   }
 
+  function setP<K extends keyof OwnerProfile>(k: K, v: OwnerProfile[K]) {
+    setProfile((p) => (p ? { ...p, [k]: v } : p));
+  }
+
   async function save() {
     setBusy(true);
     try {
-      saveAdminData({ version: 1, site: siteCfg, notif: notifCfg });
+      saveAdminData({ version: 1, site: siteCfg, notif: notifCfg, profile: profileCfg });
       toast({ title: "Configuración guardada", description: "El sitio público ya refleja tus cambios." });
     } finally {
       setBusy(false);
@@ -112,6 +124,9 @@ export function SettingsView() {
           </Button>
         }
       />
+
+      {/* ============================== MI PERFIL (premium Ronald) ============================== */}
+      <OwnerProfileCard profile={profileCfg} setP={setP} />
 
       {/* ============================== SITIO PÚBLICO ============================== */}
       <SettingsCard icon={<Sparkles className="h-5 w-5" />} title="Inicio (hero) del sitio" desc="Lo primero que ven tus clientes. Cambia textos, agrega fotos o videos y activa el carrusel.">
@@ -361,6 +376,147 @@ export function SettingsView() {
   );
 }
 
+// ============================================================ PERFIL DEL ADMIN (premium "Ronald")
+function OwnerProfileCard({ profile, setP }: { profile: OwnerProfile; setP: <K extends keyof OwnerProfile>(k: K, v: OwnerProfile[K]) => void }) {
+  const premium = isOwnerPremium(profile);
+  const db = getDB();
+  const autoXP = ownerAutoXP(db);
+  const xp = premium && profile.manualXP ? profile.xpOverride : autoXP;
+  const lvl = premium && profile.levelOverride
+    ? { current: LEVELS.find((l) => l.name === profile.levelOverride) ?? LEVELS[0], next: null, progress: 100 }
+    : barberLevel(xp);
+
+  return (
+    <div className={cn(
+      "mb-4 rounded-2xl border p-5",
+      premium ? "border-brass/60 bg-gradient-to-r from-brass/15 to-ivory" : "border-ink/10 bg-ivory"
+    )}>
+      <div className="mb-1 flex flex-wrap items-center gap-2 font-display text-lg font-bold text-ink">
+        <User className="h-5 w-5" /> Mi perfil
+        {premium ? (
+          <Chip className="border-brass/60 bg-brass/20 text-brass-dark"><Crown className="mr-1 h-3.5 w-3.5" /> Premium activo</Chip>
+        ) : null}
+      </div>
+      <p className="mb-4 text-sm text-ink-soft">Tu nombre de administrador y tu progreso como barbero de la casa.</p>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        {/* identidad + roadmap */}
+        <div className="grid content-start gap-3">
+          <div className="grid gap-1">
+            <Label htmlFor="owner-name">Nombre del administrador</Label>
+            <Input
+              id="owner-name"
+              value={profile.name}
+              onChange={(e) => setP("name", e.target.value)}
+              placeholder="Tu nombre"
+            />
+          </div>
+          <div className="rounded-2xl border border-brass/40 bg-cream p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <span className="text-4xl">{lvl.current.icon}</span>
+                <div>
+                  <div className="text-xs uppercase tracking-wide text-ink-soft">Tu nivel</div>
+                  <div className="font-display text-2xl font-bold">{lvl.current.name}</div>
+                </div>
+              </div>
+              <Chip className="border-brass/40 text-brass-dark"><Zap className="h-3.5 w-3.5" /> {xp} XP</Chip>
+            </div>
+            <div className="mt-3">
+              <div className="mb-1 flex justify-between text-xs text-ink-soft">
+                <span>{lvl.current.name}</span>
+                <span>
+                  {profile.levelOverride && premium
+                    ? "Rango fijado manualmente"
+                    : lvl.next
+                      ? `${xp}/${lvl.next.min} XP para ${lvl.next.name} ${lvl.next.icon}`
+                      : "¡Nivel máximo alcanzado! 👑"}
+                </span>
+              </div>
+              <div className="h-3 overflow-hidden rounded-full bg-ink/10">
+                <div className="h-full rounded-full bg-gradient-to-r from-brass to-melo transition-all" style={{ width: `${lvl.progress}%` }} />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* premium */}
+        <div className={cn("rounded-2xl border p-4", premium ? "border-brass/50 bg-ivory" : "border-ink/10 bg-cream")}>
+          <div className="flex items-center gap-2 font-semibold text-sm">
+            {premium ? <Crown className="h-4 w-4 text-brass-dark" /> : <Lock className="h-4 w-4 text-ink-soft" />}
+            Control de experiencia y rango
+            {premium ? null : <Chip className="ml-auto border-ink/15 text-ink-soft">Bloqueado</Chip>}
+          </div>
+
+          {premium ? (
+            <div className="mt-3 grid gap-3">
+              <ToggleField
+                label={<span>Controlar mi XP manualmente <span className="text-ink-soft">(si lo apagas, cuenta los servicios completados de la barbería)</span></span>}
+                checked={profile.manualXP}
+                onChange={(c) => setP("manualXP", c)}
+              />
+              {profile.manualXP ? (
+                <div className="grid gap-1">
+                  <Label htmlFor="owner-xp">Mi XP</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="owner-xp"
+                      type="number"
+                      min={0}
+                      value={profile.xpOverride}
+                      onChange={(e) => setP("xpOverride", Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+                    />
+                    {[10, 50].map((n) => (
+                      <Button key={n} variant="outline" onClick={() => setP("xpOverride", profile.xpOverride + n)}>+{n}</Button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <p className="rounded-lg bg-cream px-3 py-2 text-xs text-ink-soft">
+                  XP automático: <b>{autoXP}</b> (servicios completados en tu barbería)
+                </p>
+              )}
+
+              <div className="grid gap-1">
+                <Label>Mi rango</Label>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => setP("levelOverride", null)}
+                    className={cn(
+                      "rounded-full border px-3 py-1.5 text-xs font-semibold transition",
+                      profile.levelOverride === null ? "border-ink bg-ink text-ivory" : "border-ink/15 bg-ivory text-ink-soft hover:bg-cream"
+                    )}
+                  >
+                    Automático
+                  </button>
+                  {LEVELS.map((l) => (
+                    <button
+                      key={l.name}
+                      onClick={() => setP("levelOverride", l.name)}
+                      className={cn(
+                        "rounded-full border px-3 py-1.5 text-xs font-semibold transition",
+                        profile.levelOverride === l.name ? "border-brass bg-brass/20 text-brass-dark" : "border-ink/15 bg-ivory text-ink-soft hover:bg-cream"
+                      )}
+                    >
+                      {l.icon} {l.name}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-ink-soft">«Automático» sigue tu XP; elegir un rango lo fija siempre.</p>
+              </div>
+            </div>
+          ) : (
+            <p className="mt-3 rounded-lg border border-dashed border-ink/20 px-3 py-3 text-sm text-ink-soft">
+              Tu nivel y XP evolucionan solos con los servicios completados de la barbería. El control manual está reservado
+              para el administrador <b>Ronald</b>.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SettingsCard({ icon, title, desc, children }: { icon: React.ReactNode; title: string; desc: string; children: React.ReactNode }) {
   return (
     <div className="mb-4 rounded-2xl border border-ink/10 bg-ivory p-5">
@@ -371,7 +527,7 @@ function SettingsCard({ icon, title, desc, children }: { icon: React.ReactNode; 
   );
 }
 
-function ToggleField({ label, checked, onChange, compact }: { label: string; checked: boolean; onChange: (c: boolean) => void; compact?: boolean }) {
+function ToggleField({ label, checked, onChange, compact }: { label: React.ReactNode; checked: boolean; onChange: (c: boolean) => void; compact?: boolean }) {
   return (
     <label className={cn("flex items-center gap-3 text-sm", compact ? "" : "rounded-xl border border-ink/10 bg-cream p-3")}>
       <Switch checked={checked} onCheckedChange={onChange} />

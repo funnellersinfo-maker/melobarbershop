@@ -2,8 +2,9 @@
 // Shell del panel por rol (propietario / barbero) con campana y permisos.
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
-import { getDB, getSession, setSession, type SessionUser } from "@/lib/store";
+import { getDB, getSession, setSession, getAdminData, isOwnerPremium, ownerAutoXP, type SessionUser } from "@/lib/store";
 import { BrandLockup, PoleStripe, Logo } from "@/components/melo/ui";
+import { LEVELS, barberLevel } from "@/components/melo/Dashboards";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
@@ -164,8 +165,20 @@ export function AppShell({
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-64">
                 <DropdownMenuLabel>
-                  <div className="text-sm font-semibold">{user.name}</div>
-                  <div className="text-xs text-ink-soft">{isOwner ? "Propietario" : "Barbero"}</div>
+                  <div className="text-sm font-semibold">{isOwner ? getAdminData().profile.name : user.name}</div>
+                  <div className="text-xs text-ink-soft">
+                    {isOwner
+                      ? `Propietario${(() => {
+                          const p = getAdminData().profile;
+                          if (!isOwnerPremium(p)) return "";
+                          const xp = p.manualXP ? p.xpOverride : ownerAutoXP(db);
+                          const l = p.levelOverride
+                            ? (LEVELS.find((x) => x.name === p.levelOverride) ?? LEVELS[0])
+                            : barberLevel(xp).current;
+                          return ` · ${l.icon} ${l.name}`;
+                        })()}`
+                      : "Barbero"}
+                  </div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => setView("notifications")}>

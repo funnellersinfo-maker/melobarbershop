@@ -1,2 +1,6 @@
-skills/
 node_modules/
+.next/
+out/
+tsconfig.tsbuildinfo
+wrangler.toml
+.wrangler/
