@@ -2,7 +2,7 @@
 // Motor de reservas en cliente: disponibilidad, solapamientos y flujo de la cita.
 import {
   type Appointment, type AppointmentStatus, type DB, mutateDB, getDB, audit, pushNotification,
-  appointmentCode, cuid,
+  appointmentCode, cuid, getBookingConfig,
 } from "@/lib/store";
 import {
   dateKeyInBogota, dayOfWeekInBogota, dayStartUtc, bogotaToUtc, parseHM, hm,
@@ -10,8 +10,20 @@ import {
 } from "@/lib/time";
 import { getAdminData } from "@/lib/store";
 
+/** Intervalo entre cortes por defecto (minutos entre horas de inicio posibles). */
 export const SLOT_STEP = 15;
 export const PUBLIC_MIN_LEAD_MIN = 15;
+
+/** Intervalo configurado por el dueño (sanedo, con fallback al default). */
+export function slotStep(): number {
+  return getBookingConfig().slotStepMin;
+}
+
+/** Anticipación mínima configurada por el dueño para reservas públicas. */
+export function publicMinLead(): number {
+  return getBookingConfig().minLeadMin;
+}
+
 export const BLOCKING_STATUSES: AppointmentStatus[] = ["RESERVED", "CONFIRMED", "IN_ATTENTION", "COMPLETED"];
 
 export const TRANSITIONS: Record<string, AppointmentStatus[]> = {
@@ -38,6 +50,8 @@ export function slotsForService(db: DB, serviceId: string, dateKey: string, barb
   const dayStart = dayStartUtc(dateKey);
   const dow = dayOfWeekInBogota(dayStart);
   const now = new Date();
+  const step = slotStep(); // intervalo entre cortes: configurable por el dueño
+  const minLead = publicMinLead();
 
   const candidates =
     barberChoice === "ANY"
@@ -47,7 +61,7 @@ export function slotsForService(db: DB, serviceId: string, dateKey: string, barb
 
   const todayK = todayKey();
   const minStart =
-    dateKey === todayK ? minutesInBogota(now) + PUBLIC_MIN_LEAD_MIN : dateKey < todayK ? 24 * 60 + 1 : -1;
+    dateKey === todayK ? minutesInBogota(now) + minLead : dateKey < todayK ? 24 * 60 + 1 : -1;
 
   const byMinute = new Map<number, Set<string>>();
   for (const b of candidates) {
@@ -60,7 +74,7 @@ export function slotsForService(db: DB, serviceId: string, dateKey: string, barb
     for (const w of windows) {
       const ws = parseHM(w.startTime);
       const we = parseHM(w.endTime);
-      for (let m = ws; m + service.durationMin <= we; m += SLOT_STEP) {
+      for (let m = ws; m + service.durationMin <= we; m += step) {
         if (minStart >= 0 && m < minStart) continue;
         const s = new Date(dayStart.getTime() + m * 60000);
         const e = new Date(s.getTime() + service.durationMin * 60000);
@@ -139,8 +153,8 @@ export function createAppointment(input: CreateInput): Appointment {
 
   if (input.dateKey < todayKey()) fail("No se pueden crear citas en días pasados");
   if (input.origin === "PUBLIC") {
-    if (endTime.getTime() < now.getTime() + PUBLIC_MIN_LEAD_MIN * 60000) {
-      fail("La reserva pública debe tener al menos 15 minutos de anticipación");
+    if (endTime.getTime() < now.getTime() + publicMinLead() * 60000) {
+      fail(`La reserva pública debe tener al menos ${publicMinLead()} minutos de anticipación`);
     }
   } else if (!input.allowPastToday && startTime.getTime() < now.getTime()) {
     fail("La hora de la cita debe ser futura");

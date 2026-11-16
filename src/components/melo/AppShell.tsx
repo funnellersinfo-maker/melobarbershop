@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { getDB, getSession, setSession, getAdminData, isOwnerPremium, ownerAutoXP, type SessionUser } from "@/lib/store";
 import { BrandLockup, PoleStripe, Logo } from "@/components/melo/ui";
+import { AiAssistant } from "@/components/melo/AiAssistant";
 import { LEVELS, barberLevel } from "@/components/melo/Dashboards";
 import { Button } from "@/components/ui/button";
 import {
@@ -241,6 +242,9 @@ export function AppShell({
       <footer className="mt-auto bg-ink py-3 text-center text-xs text-cream/60">
         MELO BARBERSHOP · Panel {isOwner ? "del propietario" : "de barbero"} · {new Date().toLocaleDateString("es-CO", { timeZone: "America/Bogota", weekday: "long", day: "numeric", month: "long", year: "numeric" })}
       </footer>
+
+      {/* IA interna de administración: solo el dueño */}
+      {isOwner ? <AiAssistant /> : null}
     </div>
   );
 }

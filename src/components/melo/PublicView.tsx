@@ -68,15 +68,33 @@ function BookingWizard({ onLogin }: { onLogin: () => void }) {
   const [clientPhone, setClientPhone] = useState("");
   const [sent, setSent] = useState(false);
 
-  const days = useMemo(() => nextDays(21), []);
+  const days = useMemo(() => nextDays(21), [tick]); // si cambia la disponibilidad, los días se reevalúan
   const service = services.find((s) => s.id === serviceId) ?? null;
+
+  // Si el dueño desactivó/eliminó el servicio elegido mientras el cliente reservaba, se vuelve al paso 1
+  useEffect(() => {
+    if (serviceId && !service) {
+      setServiceId(null);
+      setStep(1);
+    }
+  }, [serviceId, service]);
+
+  // Si la hora elegida dejó de ser válida tras un cambio en vivo (duración, intervalo, horarios), se re-selecciona
+  useEffect(() => {
+    if (step >= 4 && time && !slots.some((s) => s.time === time)) {
+      setTime(null);
+      setStep(3);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tick]);
 
   const slots = useMemo<Slot[]>(() => {
     if (!serviceId) return [];
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { slotsForService } = require("@/lib/engines/booking") as typeof import("@/lib/engines/booking");
     return slotsForService(getDB(), serviceId, date, barberChoice);
-  }, [serviceId, date, barberChoice, step]);
+    // tick: si el dueño cambia duración, intervalo entre cortes o rango de horas, los slots se recalculan al instante
+  }, [serviceId, date, barberChoice, step, tick]);
 
   // helpers de slots por barbero (se recalculan al cambiar selección)
   function slotsFor(choice: string): Slot[] {

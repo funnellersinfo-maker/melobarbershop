@@ -4,8 +4,8 @@
 // Nada técnico, todo agrupado y en lenguaje claro.
 import { useEffect, useState } from "react";
 import {
-  getAdminData, saveAdminData, getDB, isOwnerPremium, ownerAutoXP, seedOwnerProfile,
-  type SiteConfig, type NotifConfig, type OwnerProfile,
+  getAdminData, saveAdminData, getDB, isOwnerPremium, ownerAutoXP, seedOwnerProfile, sanitizeBookingConfig,
+  type SiteConfig, type NotifConfig, type OwnerProfile, type BookingConfig,
 } from "@/lib/store";
 import { LEVELS, barberLevel } from "@/components/melo/Dashboards";
 import { permissionState, playPreviewSound, setupNotificationPersistence, type NotifPermState } from "@/lib/notify-client";
@@ -15,11 +15,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { cop } from "@/lib/money";
 import {
   Save, ImageIcon, Video, Trash2, Plus, Volume2, BellRing, Smartphone, ShieldAlert, MessageCircle, Sparkles, ListChecks,
-  User, Zap, Crown, Lock,
+  User, Zap, Crown, Lock, Clock,
 } from "lucide-react";
 
 const SOUNDS: Array<{ id: NotifConfig["sound"]; label: string }> = [
@@ -65,6 +67,7 @@ export function SettingsView() {
   const [site, setSite] = useState<SiteConfig | null>(null);
   const [notif, setNotif] = useState<NotifConfig | null>(null);
   const [profile, setProfile] = useState<OwnerProfile | null>(null);
+  const [booking, setBooking] = useState<BookingConfig | null>(null);
   const [perm, setPerm] = useState<NotifPermState>("default");
   const [busy, setBusy] = useState(false);
 
@@ -73,20 +76,25 @@ export function SettingsView() {
     setSite(admin.site);
     setNotif(admin.notif);
     setProfile(admin.profile ?? seedOwnerProfile());
+    setBooking(sanitizeBookingConfig(admin.booking));
     setupNotificationPersistence(setPerm);
   }, []);
 
-  if (!site || !notif || !profile) return null;
+  if (!site || !notif || !profile || !booking) return null;
 
   const siteCfg: SiteConfig = site;
   const notifCfg: NotifConfig = notif;
   const profileCfg: OwnerProfile = profile;
+  const bookingCfg: BookingConfig = booking;
 
   function set<K extends keyof SiteConfig>(k: K, v: SiteConfig[K]) {
     setSite((s) => (s ? { ...s, [k]: v } : s));
   }
   function setN<K extends keyof NotifConfig>(k: K, v: NotifConfig[K]) {
     setNotif((n) => (n ? { ...n, [k]: v } : n));
+  }
+  function setB<K extends keyof BookingConfig>(k: K, v: BookingConfig[K]) {
+    setBooking((b) => (b ? { ...b, [k]: v } : b));
   }
 
   function setP<K extends keyof OwnerProfile>(k: K, v: OwnerProfile[K]) {
@@ -96,7 +104,7 @@ export function SettingsView() {
   async function save() {
     setBusy(true);
     try {
-      saveAdminData({ version: 1, site: siteCfg, notif: notifCfg, profile: profileCfg });
+      saveAdminData({ version: 1, site: siteCfg, notif: notifCfg, profile: profileCfg, booking: sanitizeBookingConfig(bookingCfg) });
       toast({ title: "Configuración guardada", description: "El sitio público ya refleja tus cambios." });
     } finally {
       setBusy(false);
@@ -127,6 +135,65 @@ export function SettingsView() {
 
       {/* ============================== MI PERFIL (premium Ronald) ============================== */}
       <OwnerProfileCard profile={profileCfg} setP={setP} />
+
+      {/* ============================== RESERVAS ============================== */}
+      <SettingsCard icon={<Clock className="h-5 w-5" />} title="Reservas: intervalo y duración" desc="Cómo se generan las horas disponibles en el sitio público. Los cambios aplican al instante en la página de reservas.">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-1">
+            <Label>Intervalo entre cortes</Label>
+            <Select value={String(bookingCfg.slotStepMin)} onValueChange={(v) => setB("slotStepMin", Number(v))}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {[5, 10, 15, 20, 30, 45, 60].map((m) => (
+                  <SelectItem key={m} value={String(m)}>Cada {m} minutos</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-ink-soft">Cada cuánto puede empezar una cita. Ej: con 15 min, las horas salen 10:00, 10:15, 10:30…</p>
+          </div>
+          <div className="grid gap-1">
+            <Label>Anticipación mínima (mismo día)</Label>
+            <Select value={String(bookingCfg.minLeadMin)} onValueChange={(v) => setB("minLeadMin", Number(v))}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {[0, 15, 30, 60, 120, 240].map((m) => (
+                  <SelectItem key={m} value={String(m)}>{m === 0 ? "Sin anticipación" : `${m} minutos`}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-ink-soft">Con cuánta anticipación se puede reservar para el mismo día.</p>
+          </div>
+        </div>
+        <div className="mt-4 rounded-xl border border-ink/10 bg-cream p-4">
+          <Label>Duración de los servicios</Label>
+          <p className="mb-2 text-xs text-ink-soft">La duración define hasta dónde llega cada cita y qué horas quedan libres después. Se edita por servicio en Catálogo.</p>
+          <div className="grid gap-2">
+            {getDB().services.slice().sort((a, b) => a.sortOrder - b.sortOrder).map((s) => (
+              <div key={s.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-ink/10 bg-ivory px-3 py-2 text-sm">
+                <span className="font-medium">{s.name}</span>
+                <span className="text-ink-soft">· {cop(s.price)}</span>
+                <span className="ml-auto flex items-center gap-2">
+                  <Input
+                    type="number" min={5} max={300} value={s.durationMin}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      if (!Number.isFinite(v)) return;
+                      const { mutateDB } = require("@/lib/store") as typeof import("@/lib/store");
+                      const { saved } = mutateDB((d) => {
+                        const sv = d.services.find((x) => x.id === s.id);
+                        if (sv) sv.durationMin = Math.max(5, Math.min(300, Math.round(v)));
+                      });
+                      if (saved) toast({ title: "Duración actualizada", description: `${s.name}: ${Math.max(5, Math.min(300, Math.round(v)))} min — ya visible en el sitio.` });
+                    }}
+                    className="w-24 text-right"
+                  />
+                  <span className="text-xs text-ink-soft">min</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </SettingsCard>
 
       {/* ============================== SITIO PÚBLICO ============================== */}
       <SettingsCard icon={<Sparkles className="h-5 w-5" />} title="Inicio (hero) del sitio" desc="Lo primero que ven tus clientes. Cambia textos, agrega fotos o videos y activa el carrusel.">

@@ -396,11 +396,33 @@ export type NotifConfig = {
   notifyOnComplete: boolean;
 };
 
+/** Configuración del motor de reservas (editable por el dueño y por la IA interna). */
+export type BookingConfig = {
+  slotStepMin: number; // intervalo entre cortes: cada cuántos minutos puede empezar una cita (5–60)
+  minLeadMin: number; // anticipación mínima para reservar el mismo día (0–240)
+};
+
+export function defaultBookingConfig(): BookingConfig {
+  return { slotStepMin: 15, minLeadMin: 15 };
+}
+
+export function sanitizeBookingConfig(c: Partial<BookingConfig> | undefined | null): BookingConfig {
+  const d = defaultBookingConfig();
+  if (!c) return d;
+  const step = Math.round(Number(c.slotStepMin));
+  const lead = Math.round(Number(c.minLeadMin));
+  return {
+    slotStepMin: Number.isFinite(step) && step >= 5 && step <= 60 ? step : d.slotStepMin,
+    minLeadMin: Number.isFinite(lead) && lead >= 0 && lead <= 240 ? lead : d.minLeadMin,
+  };
+}
+
 export type AdminData = {
   version: number;
   site: SiteConfig;
   notif: NotifConfig;
   profile: OwnerProfile;
+  booking?: BookingConfig; // opcional: instalaciones viejas no lo tienen
 };
 
 // ============================================================ PERFIL DEL PROPIETARIO (premium "Ronald")
@@ -472,17 +494,18 @@ export function seedAdminData(): AdminData {
       socialFacebook: "",
       socialTiktok: "",
     },
-    notif: {
-      sound: "ding",
-      vibrate: true,
-      insistSeconds: 25,
-      notifyOnBooking: true,
-      notifyOnCancel: true,
-      notifyOnPayment: true,
-      notifyOnComplete: true,
-    },
-    profile: seedOwnerProfile(),
-  };
+      notif: {
+        sound: "ding",
+        vibrate: true,
+        insistSeconds: 25,
+        notifyOnBooking: true,
+        notifyOnCancel: true,
+        notifyOnPayment: true,
+        notifyOnComplete: true,
+      },
+      booking: defaultBookingConfig(),
+      profile: seedOwnerProfile(),
+    };
 }
 
 // ============================================================ LECTURA / ESCRITURA
@@ -513,6 +536,21 @@ function writeJSON(key: string, value: unknown): boolean {
 
 let memDb: DB | null = null;
 let memAdmin: AdminData | null = null;
+
+// Sincronización entre pestañas: si el dueño guarda en otra pestaña/ventana,
+// invalidar la caché en memoria para que las vistas relean el estado nuevo.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => {
+    if (e.key === null) {
+      // localStorage.clear() en otra pestaña
+      memDb = null;
+      memAdmin = null;
+      return;
+    }
+    if (e.key === DB_KEY) memDb = null;
+    if (e.key === ADMIN_KEY) memAdmin = null;
+  });
+}
 
 export function getDB(): DB {
   if (!memDb) {
@@ -550,6 +588,7 @@ export function getAdminData(): AdminData {
         site: { ...base.site, ...stored.site },
         notif: { ...base.notif, ...stored.notif },
         profile: { ...base.profile, ...(stored.profile ?? {}) },
+        booking: sanitizeBookingConfig(stored.booking),
       };
     };
     memAdmin = fallback();
@@ -573,6 +612,20 @@ export function mutateDB(fn: (db: DB) => void): { db: DB; saved: boolean } {
 export function saveAdminData(data: AdminData) {
   memAdmin = data;
   writeJSON(ADMIN_KEY, data);
+}
+
+/** Configuración de reservas vigente (siempre saneada). */
+export function getBookingConfig(): BookingConfig {
+  return sanitizeBookingConfig(getAdminData().booking);
+}
+
+/** Cambia la configuración de reservas (dueño o IA interna). true si persistió. */
+export function setBookingConfig(patch: Partial<BookingConfig>): boolean {
+  const admin = getAdminData();
+  const next = sanitizeBookingConfig({ ...getBookingConfig(), ...patch });
+  admin.booking = next;
+  saveAdminData(admin);
+  return true;
 }
 
 export function resetAll() {
