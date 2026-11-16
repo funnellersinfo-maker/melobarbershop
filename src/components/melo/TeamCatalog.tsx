@@ -63,7 +63,7 @@ export function CatalogView() {
   const services = db.services.slice().sort((a, b) => a.sortOrder - b.sortOrder);
 
   function saveService(data: Omit<Service, "id">, existingId?: string) {
-    mutateDB((d) => {
+    const { saved } = mutateDB((d) => {
       if (existingId) {
         const idx = d.services.findIndex((s) => s.id === existingId);
         if (idx >= 0) d.services[idx] = { ...d.services[idx], ...data };
@@ -71,6 +71,10 @@ export function CatalogView() {
         d.services.push({ ...data, id: cuid("svc") });
       }
     });
+    if (!saved) {
+      toast({ title: "No se pudo guardar", description: "El almacenamiento del navegador está lleno. Reduce el tamaño de las fotos e inténtalo de nuevo.", variant: "destructive" });
+      return;
+    }
     audit("SERVICE", existingId ?? "new", existingId ? "UPDATE" : "CREATE", "Propietario", null, data);
     setTick((n) => n + 1);
     toast({ title: existingId ? "Servicio actualizado" : "Servicio creado" });
@@ -486,7 +490,7 @@ function NewWorkerDialog({ onClose, onCreated }: { onClose: () => void; onCreate
     setErr(null);
     try {
       const code = barberAccessCode(name);
-      mutateDB((d) => {
+      const { saved } = mutateDB((d) => {
         const id = cuid("b");
         d.barbers.push({
           id,
@@ -509,6 +513,10 @@ function NewWorkerDialog({ onClose, onCreated }: { onClose: () => void; onCreate
         // autorizar todos los servicios activos
         for (const s of d.services) if (s.active) d.barberServices[`${id}:${s.id}`] = true;
       });
+      if (!saved) {
+        setErr("El almacenamiento del navegador está lleno: no se pudo guardar al barbero. Reduce el tamaño de las fotos e inténtalo de nuevo.");
+        return;
+      }
       audit("USER", name, "CREATE_BARBER", "Propietario", null, { name, code });
       onCreated(name, code);
     } catch (e) {

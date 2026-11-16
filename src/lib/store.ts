@@ -271,29 +271,26 @@ function seedAvailability(): Record<string, Availability[]> {
     windows.push({ dayOfWeek: day, startTime: "10:00", endTime: "13:00", active: true });
     windows.push({ dayOfWeek: day, startTime: "14:00", endTime: "19:00", active: true });
   }
-  for (const id of ["b1", "b2", "b3"]) av[id] = windows.map((w) => ({ ...w }));
+  for (const id of ["b-ronald"]) av[id] = windows.map((w) => ({ ...w }));
   return av;
 }
 
+/** Barber y servicio de ejemplo con los que arranca la barbería. */
+export const EXAMPLE_BARBER_ID = "b-ronald";
+export const EXAMPLE_SERVICE_ID = "svc-1";
+
 export function seedDB(): DB {
   const services: Service[] = [
-    { id: "svc-1", name: "Corte Clásico", description: "Corte a tijera y máquina, acabado con toalla caliente.", price: 35000, durationMin: 45, active: true, sortOrder: 1 },
-    { id: "svc-2", name: "Corte + Barba", description: "Corte completo más arreglo de barba con navaja.", price: 50000, durationMin: 60, active: true, sortOrder: 2 },
-    { id: "svc-3", name: "Arreglo de Barba", description: "Perfilado, rasurado y aceites.", price: 20000, durationMin: 25, active: true, sortOrder: 3 },
-    { id: "svc-4", name: "Diseño y Afinado", description: "Líneas, diseño personalizado y acabado.", price: 18000, durationMin: 20, active: true, sortOrder: 4 },
-    { id: "svc-5", name: "Lavado Capilar", description: "Lavado con masaje y secado.", price: 15000, durationMin: 20, active: true, sortOrder: 5 },
-    { id: "svc-6", name: "Corte Infantil", description: "Corte para menores, incluye acabado.", price: 25000, durationMin: 35, active: true, sortOrder: 6 },
+    { id: EXAMPLE_SERVICE_ID, name: "Corte Clásico", description: "Corte a tijera y máquina, acabado con toalla caliente.", price: 35000, durationMin: 45, active: true, sortOrder: 1 },
   ];
   const barbers: Barber[] = [
-    { id: "b1", name: "Santiago Ruiz", bio: "Especialista en cortes clásicos y navaja. 8 años de experiencia.", photo: null, code: "SGO-7K2M", active: true, phone: "+573011111111", specialty: "Corte clásico", permissions: {}, createdAt: new Date().toISOString() },
-    { id: "b2", name: "Andrés Gómez", bio: "Diseños, líneas y fades de precisión.", photo: null, code: "AGO-9X4P", active: true, phone: "+573012222222", specialty: "Diseño y fades", permissions: {}, createdAt: new Date().toISOString() },
-    { id: "b3", name: "Camilo Torres", bio: "Barba, toalla caliente y atención relajante.", photo: null, code: "CTO-3B8R", active: true, phone: "+573013333333", specialty: "Barba y acabados", permissions: {}, createdAt: new Date().toISOString() },
+    { id: EXAMPLE_BARBER_ID, name: "Ronald", bio: "Barbero de la casa. Pide con él tu corte de siempre.", photo: null, code: "RONA-D44D", active: true, phone: "+573210000000", specialty: "Corte clásico", permissions: {}, createdAt: new Date().toISOString() },
   ];
   const barberServices: Record<string, boolean> = {};
   for (const b of barbers) for (const s of services) barberServices[`${b.id}:${s.id}`] = true;
 
   return {
-    version: 1,
+    version: 2,
     barbers,
     services,
     availability: seedAvailability(),
@@ -310,6 +307,35 @@ export function seedDB(): DB {
     posts: [],
     comments: [],
   };
+}
+
+/**
+ * Migración de datos viejos: la barbería pidió empezar de cero con UN barbero
+ * de ejemplo (Ronald) y UN servicio de ejemplo. Conservamos del historial todo
+ * lo que no sea catálogo (citas, pagos, comisiones) por si hay registros, pero
+ * el equipo y el catálogo vuelven al estado de ejemplo limpio.
+ */
+function migrateDB(db: DB): DB {
+  const fresh = seedDB();
+  const keep = {
+    appointments: db.appointments,
+    payments: db.payments,
+    commissionRules: db.commissionRules,
+    commissions: db.commissions,
+    adjustments: db.adjustments,
+    settlements: db.settlements,
+    expenses: db.expenses,
+    auditLogs: db.auditLogs,
+    notifications: db.notifications,
+    posts: db.posts,
+    comments: db.comments,
+  };
+  // el barbero de ejemplo conserva su foto si el dueño ya le puso una
+  const oldRonald = db.barbers.find((b) => b.id === EXAMPLE_BARBER_ID || b.name.trim().toLowerCase() === "ronald");
+  if (oldRonald?.photo) {
+    fresh.barbers[0] = { ...fresh.barbers[0], photo: oldRonald.photo, bio: oldRonald.bio || fresh.barbers[0].bio, specialty: oldRonald.specialty || fresh.barbers[0].specialty };
+  }
+  return { ...fresh, ...keep };
 }
 
 // ============================================================ ADMIN DATA (sitio editable)
@@ -471,13 +497,17 @@ function readJSON<T>(key: string, fallback: () => T): T {
   }
 }
 
-function writeJSON(key: string, value: unknown) {
-  if (typeof window === "undefined") return;
+function writeJSON(key: string, value: unknown): boolean {
+  if (typeof window === "undefined") return true;
   try {
     localStorage.setItem(key, JSON.stringify(value));
     window.dispatchEvent(new CustomEvent("melo:db-changed", { detail: key }));
+    return true;
   } catch (e) {
+    // localStorage lleno o bloqueado: avisar a la app para NO decir "guardado" en falso
     console.error("[melo] no se pudo guardar", key, e);
+    window.dispatchEvent(new CustomEvent("melo:save-failed", { detail: { key } }));
+    return false;
   }
 }
 
@@ -486,8 +516,15 @@ let memAdmin: AdminData | null = null;
 
 export function getDB(): DB {
   if (!memDb) {
-    memDb = readJSON<DB>(DB_KEY, seedDB);
-    writeJSON(DB_KEY, memDb); // persistir seed de inmediato
+    const stored = readJSON<DB>(DB_KEY, () => null as unknown as DB);
+    if (!stored || !Array.isArray(stored.barbers) || typeof stored.version !== "number" || stored.version < 2) {
+      // primera visita o datos del esquema viejo: semilla limpia (+ migración del historial si había)
+      const base = seedDB();
+      memDb = stored && Array.isArray(stored.barbers) ? migrateDB(stored) : base;
+      writeJSON(DB_KEY, memDb); // persistir de inmediato
+    } else {
+      memDb = stored;
+    }
   }
   return memDb;
 }
@@ -526,11 +563,11 @@ export function saveDB(db: DB) {
   writeJSON(DB_KEY, db);
 }
 
-export function mutateDB(fn: (db: DB) => void): DB {
+export function mutateDB(fn: (db: DB) => void): { db: DB; saved: boolean } {
   const db = getDB();
   fn(db);
-  saveDB(db);
-  return db;
+  const saved = writeJSON(DB_KEY, db);
+  return { db, saved };
 }
 
 export function saveAdminData(data: AdminData) {

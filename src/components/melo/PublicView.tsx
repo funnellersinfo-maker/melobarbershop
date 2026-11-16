@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { getAdminData, getDB, deviceId, type Barber, type Service, type Post, type Comment } from "@/lib/store";
 import { cop } from "@/lib/money";
 import { DIAS_CORTOS, MESES_CORTOS, dateKeyInBogota, partsInBogota, addDaysKey } from "@/lib/time";
-import { BrandLockup, PoleStripe, Chip, Logo, SectionTitle } from "@/components/melo/ui";
+import { BrandLockup, PoleStripe, Chip, Logo, SectionTitle, useMeloDB } from "@/components/melo/ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -54,10 +54,11 @@ function buildWhatsappMessage(p: {
 
 function BookingWizard({ onLogin }: { onLogin: () => void }) {
   const [step, setStep] = useState(1);
+  const tick = useMeloDB(); // reacciona al instante si el dueño guarda barberos/servicios mientras el cliente elige
   const db = getDB();
   const admin = getAdminData();
-  const services = useMemo(() => db.services.filter((s) => s.active), [db.services.length]);
-  const barbers = useMemo(() => db.barbers.filter((b) => b.active), [db.barbers.length]);
+  const services = useMemo(() => db.services.filter((s) => s.active), [tick, db.services.length]);
+  const barbers = useMemo(() => db.barbers.filter((b) => b.active), [tick, db.barbers.length]);
 
   const [serviceId, setServiceId] = useState<string | null>(null);
   const [barberChoice, setBarberChoice] = useState<string>("ANY");
@@ -632,6 +633,7 @@ function ReviewForm({ barberId, onDone }: { barberId: string; onDone: () => void
 
 // ============================================================ VISTA PÚBLICA
 export function PublicView({ onLogin }: { onLogin: () => void }) {
+  useMeloDB(); // el sitio público refleja en vivo los barberos/servicios que el dueño guarda
   const admin = getAdminData();
   const db = getDB();
   const site = admin.site;

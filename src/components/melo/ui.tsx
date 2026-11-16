@@ -1,5 +1,6 @@
 "use client";
 // Piezas visuales compartidas del sistema MELO.
+import { useEffect, useState } from "react";
 import { cop } from "@/lib/money";
 import { cn } from "@/lib/utils";
 
@@ -124,3 +125,22 @@ export const CATEGORY_LABEL: Record<string, string> = {
   NOMINA_EXTRA: "Nómina extra",
   OTROS: "Otros",
 };
+
+// ============================================================ SINCRONIZACIÓN EN VIVO
+// El panel del dueño y el sitio público viven en la misma página. Este hook
+// re-renderiza el componente cada vez que la base de datos local cambia
+// (barbero guardado, servicio creado, etc.), sin importar desde dónde se
+// escribió. Así lo que se guarda aparece al instante en todas las vistas.
+export function useMeloDB() {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const h = () => setTick((n) => n + 1);
+    window.addEventListener("melo:db-changed", h);
+    window.addEventListener("storage", h); // cambios desde otra pestaña del mismo navegador
+    return () => {
+      window.removeEventListener("melo:db-changed", h);
+      window.removeEventListener("storage", h);
+    };
+  }, []);
+  return tick;
+}
