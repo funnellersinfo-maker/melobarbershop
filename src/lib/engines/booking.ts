@@ -47,6 +47,8 @@ export type SlotInfo = { time: string; startMin: number; barbers: string[] };
 export function slotsForService(db: DB, serviceId: string, dateKey: string, barberChoice: string): SlotInfo[] {
   const service = db.services.find((s) => s.id === serviceId && s.active);
   if (!service) return [];
+  // día cerrado para toda la barbería (fumigación, vacaciones, festivo…): sin horas
+  if (db.blockedDates?.[dateKey]) return [];
   const dayStart = dayStartUtc(dateKey);
   const dow = dayOfWeekInBogota(dayStart);
   const now = new Date();
@@ -137,6 +139,10 @@ export function createAppointment(input: CreateInput): Appointment {
   const db = getDB();
   const service = db.services.find((s) => s.id === input.serviceId && s.active);
   if (!service) fail("El servicio no existe o está inactivo");
+  // día cerrado para toda la barbería (fumigación, vacaciones…)
+  if (db.blockedDates?.[input.dateKey]) {
+    fail(`Ese día la barbería está cerrada: ${db.blockedDates[input.dateKey]}`);
+  }
 
   const barberId =
     input.barberId === "ANY"
@@ -448,4 +454,55 @@ export function freeSlotsForBarber(db: DB, barberId: string, serviceId: string, 
   const service = db.services.find((s) => s.id === serviceId);
   if (!service) return [];
   return slotsForService(db, serviceId, dateKey, barberId).map((s) => s.time);
+}
+
+// ---------- días cerrados para toda la barbería ----------
+/**
+ * Cierra un día completo (fumigación, vacaciones, festivo…). Cancela las citas
+ * activas de ese día con el motivo indicado y devuelve un resumen de lo que
+ * había, para que el dueño pueda avisar a esos clientes.
+ */
+export function blockDay(dateKey: string, motivo: string, actorName: string): { cancelled: Array<{ code: string; clientName: string; time: string; barberName: string }> } {
+  const db = getDB();
+  const dayStart = dayStartUtc(dateKey);
+  const dayEnd = new Date(dayStart.getTime() + 24 * 3600 * 1000);
+
+  const activas = db.appointments.filter(
+    (a) => BLOCKING_STATUSES.includes(a.status) &&
+      a.startTime < dayEnd.toISOString() && a.endTime > dayStart.toISOString()
+  );
+  const cancelled: Array<{ code: string; clientName: string; time: string; barberName: string }> = [];
+  for (const a of activas) {
+    const barber = db.barbers.find((b) => b.id === a.barberId);
+    const before = { ...a };
+    mutateDB((d) => {
+      const x = d.appointments.find((y) => y.id === a.id);
+      if (x) { x.status = "CANCELLED"; x.cancelReason = `Día cerrado: ${motivo}`; }
+    });
+    audit("APPOINTMENT", a.id, "STATUS_CANCELLED", actorName, before, { ...a, status: "CANCELLED", cancelReason: `Día cerrado: ${motivo}` });
+    cancelled.push({
+      code: a.code,
+      clientName: a.clientName,
+      time: `${dateKeyInBogota(new Date(a.startTime))} ${hm(minutesInBogota(new Date(a.startTime)))}`,
+      barberName: barber?.name ?? "?",
+    });
+    pushNotification(a.barberId, "appointment.cancelled", "❌ Cita cancelada (día cerrado)", `${a.code} · ${a.clientName} · motivo: ${motivo}`);
+  }
+
+  mutateDB((d) => {
+    if (!d.blockedDates) d.blockedDates = {};
+    d.blockedDates[dateKey] = motivo;
+  });
+  audit("BOOKING", dateKey, "BLOCK_DAY", actorName, null, { motivo, canceladas: cancelled.length });
+  return { cancelled };
+}
+
+/** Vuelve a abrir un día cerrado. */
+export function unblockDay(dateKey: string, actorName: string): boolean {
+  const db = getDB();
+  if (!db.blockedDates?.[dateKey]) return false;
+  const motivo = db.blockedDates[dateKey];
+  mutateDB((d) => { if (d.blockedDates) delete d.blockedDates[dateKey]; });
+  audit("BOOKING", dateKey, "UNBLOCK_DAY", actorName, { motivo }, null);
+  return true;
 }

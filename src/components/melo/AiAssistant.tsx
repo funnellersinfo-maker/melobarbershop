@@ -14,21 +14,21 @@ import { runAssistantCommand } from "@/lib/engines/assistant";
 type Msg = { role: "user" | "ai"; text: string; ok: boolean };
 
 const EXAMPLES = [
-  "Crea el servicio Barba premium de 25000, 30 minutos",
-  "Cambia el precio de Corte Clásico a 40000",
+  "Bloquea el 24 de noviembre que vamos a fumigar",
+  "Cambia la frase del membrete a: Tu estilo, nuestra pasión",
+  "El corte clásico ahora vale 40 mil",
   "Crea el barbero Luis",
-  "Horario de Ronald: martes a sábado de 9:00 a 18:00",
-  "Que las citas salgan cada 30 minutos",
-  "¿Qué servicios hay?",
+  "Horario de Ronald: martes a sábado de 9 a 18",
+  "¿Cuántas citas hay mañana?",
 ];
 
 const WELCOME: Msg = {
   role: "ai",
   ok: true,
   text:
-    "¡Hola! Soy tu IA interna de administración. Pídeme cambios y los hago al instante:\n" +
-    "crear servicios y barberos, precios, duraciones, horarios, activar/desactivar y el intervalo entre cortes. " +
-    "Escribe «ayuda» para ver todo lo que sé hacer.",
+    "¡Hola! Soy tu IA interna de administración. Pídeme cambios como vengan a tu mente —entiendo aunque escribas rápido o con errores—:\n" +
+    "bloquear días (fumigación, vacaciones), precios, horarios, servicios, el membrete y el WhatsApp, citas, gastos… " +
+    "Todo se aplica en tiempo real y queda en el Historial. Escribe «ayuda» para ver ejemplos.",
 };
 
 export function AiAssistant() {
@@ -50,8 +50,9 @@ export function AiAssistant() {
     try {
       const res = runAssistantCommand(q);
       setMsgs((m) => [...m, { role: "ai", text: res.text, ok: res.ok }]);
-      if (res.ok && !/^(hola|buenas|hey|que tal)/.test(q.toLowerCase()) && !/ayuda|help|que sabes|que puedes|comandos|que servicios|mis barberos|quienes|horario de|intervalo|cada cuanto/.test(q.toLowerCase())) {
-        toast({ title: "Cambio aplicado", description: "Ya visible en el sitio público." });
+      // toast solo cuando la IA aplicó un cambio real (viene con acciones)
+      if (res.ok && res.actions && res.actions.length > 0) {
+        toast({ title: "Cambio aplicado", description: "Ya visible en el sitio público y en todos los dispositivos." });
       }
     } catch (e) {
       setMsgs((m) => [...m, { role: "ai", text: "Ocurrió un error inesperado y no apliqué nada. Intenta de nuevo con otra redacción.", ok: false }]);
@@ -162,7 +163,7 @@ export function AiAssistant() {
               }
             }}
             rows={1}
-            placeholder="Pide un cambio: «Crea el servicio Fade de 30000, 45 minutos»"
+            placeholder="Pide cualquier cambio: «bloquea el 24 que fumigamos», «el fade vale 30 mil»…"
             className="max-h-28 min-h-10 flex-1 resize-none text-sm"
           />
           <Button size="icon" onClick={() => send()} disabled={!input.trim()} className="h-10 w-10 shrink-0 bg-melo hover:bg-melo-dark text-ivory" aria-label="Enviar">

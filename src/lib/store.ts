@@ -224,6 +224,8 @@ export type DB = {
   notifications: Notification[];
   posts: Post[];
   comments: Comment[];
+  /** Días completamente cerrados para toda la barbería: "2026-11-24" -> motivo (fumigación, vacaciones…) */
+  blockedDates: Record<string, string>;
 };
 
 export const DEVICE_ID_KEY = "melo.deviceId.v1";
@@ -306,6 +308,7 @@ export function seedDB(): DB {
     notifications: [],
     posts: [],
     comments: [],
+    blockedDates: {},
   };
 }
 
@@ -329,6 +332,7 @@ function migrateDB(db: DB): DB {
     notifications: db.notifications,
     posts: db.posts,
     comments: db.comments,
+    blockedDates: db.blockedDates ?? {},
   };
   // el barbero de ejemplo conserva su foto si el dueño ya le puso una
   const oldRonald = db.barbers.find((b) => b.id === EXAMPLE_BARBER_ID || b.name.trim().toLowerCase() === "ronald");
@@ -586,7 +590,8 @@ export function getDB(): DB {
       memDb = stored && Array.isArray(stored.barbers) ? migrateDB(stored) : base;
       writeJSONQuiet(DB_KEY, memDb); // persistir de inmediato (sin eco de sincronización)
     } else {
-      memDb = stored;
+      // instalaciones con esquema v2 anterior a blockedDates: rellenar campos nuevos
+      memDb = { ...stored, blockedDates: stored.blockedDates ?? {} };
     }
   }
   return memDb;
