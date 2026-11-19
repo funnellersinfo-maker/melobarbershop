@@ -151,7 +151,6 @@ async function pull(): Promise<boolean> {
   }
   const rev = Number(body.rev || 0);
   booted = true; // ya hablamos con el servidor: se puede subir con seguridad
-  if (body.same || rev === remoteRev) return false;
   if (!rev || !body.payload || !body.payload.db) {
     // servidor vacío (primera vez en la historia): subir nuestro estado completo
     remoteRev = rev;
@@ -159,6 +158,7 @@ async function pull(): Promise<boolean> {
     schedulePush(0);
     return false;
   }
+  if (body.same || rev === remoteRev) return false;
   try {
   const remoteDb = body.payload.db;
   const remoteAdmin: AdminDataWithRev = { ...(body.payload.admin ?? seedAdminData()), __rev: rev };
