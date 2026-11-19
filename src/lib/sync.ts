@@ -14,7 +14,7 @@
 //  4. La revisión es un contador monotónico global generado en el cliente que
 //     escribe (Date.now() garantiza orden entre sesiones de trabajo reales).
 
-import { getDB, getAdminData, seedAdminData, sanitizeBookingConfig, DB_KEY, ADMIN_KEY } from "@/lib/store";
+import { getDB, getAdminData, seedAdminData, sanitizeBookingConfig, barberReviewCode, DB_KEY, ADMIN_KEY } from "@/lib/store";
 import type { AdminData, DB, Appointment, Payment, CommissionRule, Commission, Adjustment, Settlement, Expense, AuditLog, Notification, Post, Comment, Barber, Service, Availability } from "@/lib/store";
 
 // Worker de sincronización (Cloudflare, plan gratuito).
@@ -212,7 +212,7 @@ async function pull(): Promise<boolean> {
   for (const b of db.barbers) for (const s of db.services) keep.add(`${b.id}:${s.id}`);
   db.barberServices = Object.fromEntries(Object.entries(db.barberServices).filter(([k]) => keep.has(k)));
 
-  remoteRev = rev;
+    remoteRev = rev;
   {
     // guardar la referencia del servidor SIN __rev (igual a como se persiste),
     // para que la comparación del siguiente pull detecte solo cambios reales
@@ -220,6 +220,10 @@ async function pull(): Promise<boolean> {
     void _rev;
     lastPulledAdmin = JSON.parse(JSON.stringify(adminNoRev)) as AdminData;
     lastPulledDb = JSON.parse(JSON.stringify(db)) as DB;
+  }
+  // migración en vivo: barberos que llegaron del servidor sin reviewCode público
+  for (const b of db.barbers) {
+    if (!b.reviewCode) b.reviewCode = barberReviewCode();
   }
   writeLocal(db, admin);
   // invalidar cachés del store y refrescar toda la UI al instante

@@ -14,7 +14,7 @@
 // Toda orden queda en el historial de auditoría, como cualquier cambio manual.
 
 import {
-  getDB, mutateDB, audit, cuid, barberAccessCode, getBookingConfig, setBookingConfig,
+  getDB, mutateDB, audit, cuid, barberAccessCode, barberReviewCode, getBookingConfig, setBookingConfig,
   saveAdminData, getAdminData, type Barber, type Service, type Availability,
 } from "@/lib/store";
 import {
@@ -675,7 +675,7 @@ const EXECUTORS: Executor[] = [
       const id = cuid("b");
       const { saved } = mutateDB((d) => {
         d.barbers.push({
-          id, name, bio: "", photo: null, code, active: true, phone: null, specialty: "",
+          id, name, bio: "", photo: null, code, reviewCode: barberReviewCode(), active: true, phone: null, specialty: "",
           permissions: { "payments.register": true, "commissions.view": true, "settlements.view": true, "profile.edit": true },
           createdAt: new Date().toISOString(),
         });

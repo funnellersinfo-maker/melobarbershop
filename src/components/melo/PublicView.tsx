@@ -30,29 +30,30 @@ function dayLabel(key: string): { dow: string; day: string; month: string } {
   return { dow: DIAS_CORTOS[p.dow], day: String(p.day), month: MESES_CORTOS[p.month - 1] };
 }
 
-/** Resumen con emojis, listo para WhatsApp: sin símbolos raros, legible en cualquier teléfono. */
+/** Resumen listo para WhatsApp en texto plano: sin emojis, así nunca llegan
+ * símbolos rotos (rombos negros) en ningún teléfono ni versión de WhatsApp. */
 function buildWhatsappMessage(p: {
   service: Service; barberName: string; date: string; time: string; clientName: string; clientPhone: string; code: string;
 }): string {
   const lines = [
-    "💈 *MELO BARBERSHOP — NUEVA CITA* 💈",
+    "*MELO BARBERSHOP - NUEVA CITA*",
     "",
-    `👤 *Cliente:* ${p.clientName}`,
-    p.clientPhone ? `📱 *Teléfono:* ${p.clientPhone}` : null,
-    `✂️ *Servicio:* ${p.service.name}`,
-    `💵 *Valor:* $${p.service.price.toLocaleString("es-CO")}`,
-    `🕒 *Duración:* ${p.service.durationMin} minutos`,
-    `👨‍🔧 *Barbero:* ${p.barberName}`,
-    `📅 *Fecha:* ${p.date}`,
-    `⏰ *Hora:* ${p.time}`,
-    `🔖 *Código de cita:* ${p.code}`,
+    `*Cliente:* ${p.clientName}`,
+    p.clientPhone ? `*Telefono:* ${p.clientPhone}` : null,
+    `*Servicio:* ${p.service.name}`,
+    `*Valor:* $${p.service.price.toLocaleString("es-CO")}`,
+    `*Duracion:* ${p.service.durationMin} minutos`,
+    `*Barbero:* ${p.barberName}`,
+    `*Fecha:* ${p.date}`,
+    `*Hora:* ${p.time}`,
+    `*Codigo de cita:* ${p.code}`,
     "",
-    "✅ Por favor confirma mi cita. ¡Gracias!",
+    "Por favor confirma mi cita. Gracias!",
   ].filter(Boolean);
   return lines.join("\n");
 }
 
-function BookingWizard({ onLogin }: { onLogin: () => void }) {
+function BookingWizard({ onHome }: { onHome: () => void }) {
   const [step, setStep] = useState(1);
   const tick = useMeloDB(); // reacciona al instante si el dueño guarda barberos/servicios mientras el cliente elige
   const db = getDB();
@@ -318,7 +319,7 @@ function BookingWizard({ onLogin }: { onLogin: () => void }) {
           <p className="mt-1 text-sm text-ink-soft">Si no se abrió WhatsApp, revisa que tu navegador permita ventanas emergentes.</p>
           <div className="mt-6 flex flex-wrap justify-center gap-3">
             <Button variant="outline" className="border-ink/25" onClick={reset}>Reservar otra cita</Button>
-            <Button variant="outline" className="border-ink/25" onClick={onLogin}>Volver al inicio</Button>
+            <Button variant="outline" className="border-ink/25" onClick={onHome}>Volver al inicio</Button>
           </div>
         </div>
       ) : null}
@@ -650,6 +651,112 @@ function ReviewForm({ barberId, onDone }: { barberId: string; onDone: () => void
   );
 }
 
+// ============================================================ RESEÑA DIRECTA (link/QR del barbero)
+/** Pantalla pública de reseña rápida: llega por ?r=CODIGO (QR o link del
+ * barbero). El cliente califica sin pasar por el wizard de reservas. */
+function ReviewDirectView({ barber, onExit }: { barber: Barber; onExit: () => void }) {
+  const [, force] = useState(0);
+  const [name, setName] = useState("");
+  const [rating, setRating] = useState(0);
+  const [text, setText] = useState("");
+  const [done, setDone] = useState(false);
+  const db = getDB();
+  const reviews = db.comments.filter((c) => c.barberId === barber.id && c.postId === null && !c.hidden && c.rating);
+  const avg = reviews.length ? reviews.reduce((s, c) => s + (c.rating ?? 0), 0) / reviews.length : 0;
+
+  function send() {
+    if (name.trim().length < 2 || rating < 1) return;
+    const { mutateDB } = require("@/lib/store") as typeof import("@/lib/store");
+    mutateDB((d) => {
+      d.comments.push({
+        id: `cmt-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
+        postId: null,
+        barberId: barber.id,
+        authorName: name.trim().slice(0, 60),
+        deviceId: deviceId(),
+        rating,
+        text: text.trim().slice(0, 600),
+        createdAt: new Date().toISOString(),
+      });
+    });
+    setDone(true);
+  }
+
+  return (
+    <div className="min-h-screen bg-cream px-4 py-8">
+      <div className="mx-auto max-w-md">
+        <div className="mb-4 text-center">
+          <BrandLockup compact />
+        </div>
+
+        {done ? (
+          <div className="rounded-3xl border border-good/40 bg-ivory p-8 text-center shadow-sm">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-good/15">
+              <CheckCircle2 className="h-9 w-9 text-good" />
+            </div>
+            <h2 className="font-display text-2xl font-bold">¡Gracias por tu reseña!</h2>
+            <p className="mt-2 text-sm text-ink-soft">Tu calificación de {barber.name} ya quedó registrada.</p>
+            <Button className="mt-6 bg-ink text-ivory hover:bg-ink/80" onClick={onExit}>
+              Volver a la barbería
+            </Button>
+          </div>
+        ) : (
+          <div className="rounded-3xl border border-ink/10 bg-ivory p-6 shadow-sm">
+            <div className="flex flex-col items-center text-center">
+              {barber.photo ? (
+                <img src={barber.photo} alt={barber.name} className="h-20 w-20 rounded-2xl object-cover ring-4 ring-brass/30" />
+              ) : (
+                <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-brass/15 font-display text-2xl font-bold text-brass-dark">
+                  {barber.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}
+                </div>
+              )}
+              <h2 className="mt-3 font-display text-xl font-bold">¿Cómo te fue con {barber.name}?</h2>
+              <p className="mt-1 text-sm text-ink-soft">Tu reseña ayuda a otros clientes a elegirlo.</p>
+              {reviews.length > 0 ? (
+                <div className="mt-2 inline-flex items-center gap-1 text-sm text-ink-soft">
+                  <Star className="h-4 w-4 fill-brass text-brass" /> {Math.round(avg * 10) / 10} / 5 · {reviews.length} reseña{reviews.length === 1 ? "" : "s"}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="mt-6 flex justify-center gap-2" role="radiogroup" aria-label="Calificación">
+              {Array.from({ length: 5 }, (_, i) => (
+                <button
+                  key={i}
+                  onClick={() => setRating(i + 1)}
+                  aria-label={`${i + 1} estrella${i === 0 ? "" : "s"}`}
+                  className="transition hover:scale-110"
+                >
+                  <Star className={cn("h-10 w-10", i < rating ? "fill-brass text-brass" : "text-ink/20 hover:text-brass")} />
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-5 space-y-2">
+              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Tu nombre *" />
+              <Input value={text} onChange={(e) => setText(e.target.value)} placeholder="Cuéntale cómo te fue (opcional)" />
+            </div>
+
+            <Button
+              className="mt-4 w-full bg-ink text-ivory hover:bg-ink/80"
+              onClick={send}
+              disabled={name.trim().length < 2 || rating < 1}
+            >
+              Enviar reseña
+            </Button>
+            <button onClick={onExit} className="mt-3 block w-full text-center text-xs text-ink-soft hover:text-ink hover:underline">
+              Volver a la barbería
+            </button>
+            <div className="mt-2 text-center text-[10px] text-ink/35" onClick={() => force((n) => n + 1)}>
+              {reviews.length} reseña{reviews.length === 1 ? "" : "s"} registrada{reviews.length === 1 ? "" : "s"}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ============================================================ VISTA PÚBLICA
 export function PublicView({ onLogin }: { onLogin: () => void }) {
   useMeloDB(); // el sitio público refleja en vivo los barberos/servicios que el dueño guarda
@@ -660,9 +767,33 @@ export function PublicView({ onLogin }: { onLogin: () => void }) {
   const [profileFor, setProfileFor] = useState<Barber | null>(null);
   const [faqOpen, setFaqOpen] = useState<number | null>(0);
   const [socialOpen, setSocialOpen] = useState(false);
+  // reseña directa por link/QR del barbero (?r=CODIGO) — se limpia la URL para
+  // que al compartir la página no se reabra la reseña
+  const [reviewFor, setReviewFor] = useState<Barber | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const r = params.get("r")?.trim().toUpperCase();
+    if (r) {
+      const b = getDB().barbers.find((x) => x.reviewCode?.toUpperCase() === r || x.code.toUpperCase() === r);
+      if (b) setReviewFor(b);
+      window.history.replaceState({}, "", window.location.pathname); // limpiar el link
+    }
+    if (params.get("reservar") === "1") {
+      setWizardOpen(true);
+      window.history.replaceState({}, "", window.location.pathname);
+      setTimeout(() => document.getElementById("reservar")?.scrollIntoView({ behavior: "smooth" }), 150);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const services = db.services.filter((s) => s.active);
   const barbers = db.barbers.filter((b) => b.active);
+
+  // pantalla de reseña directa: ocupa toda la vista (sin el sitio detrás)
+  if (reviewFor) {
+    return <ReviewDirectView barber={reviewFor} onExit={() => setReviewFor(null)} />;
+  }
 
   return (
     <div className="min-h-screen flex flex-col bg-cream text-ink">
@@ -861,7 +992,7 @@ export function PublicView({ onLogin }: { onLogin: () => void }) {
                 <p className="mt-1 text-ink-soft">{site.bookingSubtitle}</p>
               </div>
               {services.length > 0 ? (
-                <BookingWizard onLogin={onLogin} />
+                <BookingWizard onHome={() => { setWizardOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); }} />
               ) : (
                 <div className="rounded-2xl border border-dashed border-ink/15 px-6 py-10 text-center text-ink-soft">
                   El catálogo aún no tiene servicios activos.

@@ -13,14 +13,14 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   LayoutDashboard, CalendarDays, Wallet, Percent, HandCoins, SlidersHorizontal, Receipt, Scissors, Users, BarChart3,
-  Bell, History, Settings, LogOut, CheckCheck, Clock, ChevronDown, MessageSquareShare,
+  Bell, History, Settings, LogOut, CheckCheck, Clock, ChevronDown, MessageSquareShare, QrCode,
 } from "lucide-react";
 import { fmtDateMedium, timeHMInBogota } from "@/lib/time";
 
 export type ViewId =
   | "dashboard" | "agenda" | "payments" | "commissions" | "settlements" | "adjustments"
   | "expenses" | "catalog" | "workers" | "reports" | "notifications" | "audit" | "settings"
-  | "social" | "myProfile" | "myAvailability";
+  | "social" | "share" | "myProfile" | "myAvailability";
 
 export function AppShell({
   user,
@@ -64,6 +64,7 @@ export function AppShell({
         { id: "expenses", label: "Gastos", icon: <Receipt className="h-4 w-4" />, show: true },
         { id: "catalog", label: "Catálogo", icon: <Scissors className="h-4 w-4" />, show: true },
         { id: "workers", label: "Equipo", icon: <Users className="h-4 w-4" />, show: true },
+        { id: "share", label: "Compartir", icon: <QrCode className="h-4 w-4" />, show: true },
         { id: "social", label: "Comunidad", icon: <MessageSquareShare className="h-4 w-4" />, show: true },
         { id: "reports", label: "Reportes", icon: <BarChart3 className="h-4 w-4" />, show: true },
         { id: "notifications", label: "Notificaciones", icon: <Bell className="h-4 w-4" />, show: true },

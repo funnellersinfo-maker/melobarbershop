@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { cop } from "@/lib/money";
 import { DIAS, fmtDateMedium, timeHMInBogota } from "@/lib/time";
 import {
-  getDB, mutateDB, audit, cuid, barberAccessCode,
+  getDB, mutateDB, audit, cuid, barberAccessCode, barberReviewCode,
   type SessionUser, type Service, type Barber, type Availability,
 } from "@/lib/store";
 import { SectionTitle, EmptyState, Chip } from "@/components/melo/ui";
@@ -498,6 +498,7 @@ function NewWorkerDialog({ onClose, onCreated }: { onClose: () => void; onCreate
           bio: "",
           photo: null,
           code,
+          reviewCode: barberReviewCode(),
           active: true,
           phone: phone || null,
           specialty: specialty.trim(),

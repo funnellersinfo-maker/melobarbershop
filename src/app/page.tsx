@@ -3,7 +3,7 @@
 // Sin sesión: sitio público con reservas. Con sesión: panel por rol.
 // Persistencia 100% local (localStorage) — sin backend.
 import { useEffect, useState } from "react";
-import { getSession, logout, type SessionUser } from "@/lib/store";
+import { getSession, logout, ensureReviewCodes, type SessionUser } from "@/lib/store";
 import { setupNotificationPersistence, ensureServiceWorker } from "@/lib/notify-client";
 import { startSync } from "@/lib/sync";
 import { PublicView } from "@/components/melo/PublicView";
@@ -19,6 +19,7 @@ import { CatalogView, WorkersView, MyAvailabilityView, AuditView } from "@/compo
 import { ReportsView } from "@/components/melo/ReportsView";
 import { NotificationsView, SocialModerationView, MyProfileView } from "@/components/melo/NotifSettings";
 import { SettingsView } from "@/components/melo/SettingsView";
+import { ShareView } from "@/components/melo/ShareView";
 import { LoadingBlock } from "@/components/melo/ui";
 
 export default function Page() {
@@ -33,6 +34,9 @@ export default function Page() {
     setUser(s);
     if (s && s.role === "BARBER") setView("dashboard");
     setChecking(false);
+
+    // códigos públicos de reseñas: migración en vivo (barberos viejos no lo tienen)
+    ensureReviewCodes();
 
     // sincronización multi-dispositivo: computador, celular y visitantes ven
     // siempre el mismo estado (bajar cambios cada 4s + subir al guardar)
@@ -101,6 +105,8 @@ export default function Page() {
             return <WorkersView user={user} />;
           case "social":
             return <SocialModerationView />;
+          case "share":
+            return <ShareView />;
           case "reports":
             return <ReportsView />;
           case "audit":

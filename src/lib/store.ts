@@ -18,6 +18,7 @@ export type Barber = {
   bio: string; // reseña corta
   photo: string | null; // dataURL
   code: string; // código único de acceso (contraseña del barbero)
+  reviewCode: string; // código público para el link/QR de reseñas (no es secreto)
   active: boolean;
   phone: string | null;
   specialty: string;
@@ -265,6 +266,30 @@ export function barberAccessCode(name: string): string {
   return `${base}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 }
 
+/** Código público del link de reseñas: RV-XXXXXX (alfabeto sin caracteres ambiguos). */
+export function barberReviewCode(): string {
+  let s = "";
+  for (let i = 0; i < 6; i++) s += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)];
+  return `RV-${s}`;
+}
+
+/** Asegura que cada barbero tenga su reviewCode público único (migración en vivo). */
+export function ensureReviewCodes(): void {
+  const db = getDB();
+  const missing = db.barbers.some((b) => !b.reviewCode);
+  if (!missing) return;
+  mutateDB((d) => {
+    const used = new Set<string>();
+    for (const b of d.barbers) {
+      if (b.reviewCode && !used.has(b.reviewCode)) { used.add(b.reviewCode); continue; }
+      let code = barberReviewCode();
+      while (used.has(code)) code = barberReviewCode();
+      used.add(code);
+      b.reviewCode = code;
+    }
+  });
+}
+
 // ============================================================ SEED
 function seedAvailability(): Record<string, Availability[]> {
   const av: Record<string, Availability[]> = {};
@@ -286,7 +311,7 @@ export function seedDB(): DB {
     { id: EXAMPLE_SERVICE_ID, name: "Corte Clásico", description: "Corte a tijera y máquina, acabado con toalla caliente.", price: 35000, durationMin: 45, active: true, sortOrder: 1 },
   ];
   const barbers: Barber[] = [
-    { id: EXAMPLE_BARBER_ID, name: "Ronald", bio: "Barbero de la casa. Pide con él tu corte de siempre.", photo: null, code: "RONA-D44D", active: true, phone: "+573210000000", specialty: "Corte clásico", permissions: {}, createdAt: new Date().toISOString() },
+    { id: EXAMPLE_BARBER_ID, name: "Ronald", bio: "Barbero de la casa. Pide con él tu corte de siempre.", photo: null, code: "RONA-D44D", reviewCode: "RV-EXAMPLE", active: true, phone: "+573210000000", specialty: "Corte clásico", permissions: {}, createdAt: new Date().toISOString() },
   ];
   const barberServices: Record<string, boolean> = {};
   for (const b of barbers) for (const s of services) barberServices[`${b.id}:${s.id}`] = true;

@@ -21,8 +21,10 @@ import { toast, useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import {
   Bell, CheckCheck, Star, Heart, Trash2, EyeOff, Eye, Camera, Plus, Video, Image as ImageIcon,
-  Send, MessageCircle, Lock, ShieldAlert, Volume2, Smartphone, BellRing,
+  Send, MessageCircle, Lock, ShieldAlert, Volume2, Smartphone, BellRing, QrCode,
 } from "lucide-react";
+import { QrShareCard } from "@/components/melo/QrShareCard";
+import { bookingLink, reviewLink } from "@/lib/qrcode";
 
 // ============================================================ NOTIFICACIONES
 export function NotificationsView({ user }: { user: SessionUser }) {
@@ -364,6 +366,63 @@ export function MyProfileView({ user }: { user: SessionUser }) {
           <div className="h-3 overflow-hidden rounded-full bg-ink/10">
             <div className="h-full rounded-full bg-gradient-to-r from-brass to-melo transition-all" style={{ width: `${lvl.progress}%` }} />
           </div>
+        </div>
+      </div>
+
+      {/* MIS QR PARA COMPARTIR: reservas de la barbería + reseñas personales */}
+      <div className="mb-6">
+        <div className="mb-3 flex items-center gap-2">
+          <QrCode className="h-5 w-5 text-brass-dark" />
+          <h3 className="font-display text-lg font-bold">Mis QR para compartir</h3>
+        </div>
+        <p className="mb-3 text-sm text-ink-soft">
+          Muéstrale el QR de reseñas al cliente al final del corte o mándaselo por WhatsApp: te califica al toque sin entrar a reservas. El de reservas sirve para que te agenden desde cualquier parte.
+        </p>
+        <div className="grid gap-4 md:grid-cols-2">
+          <QrShareCard
+            title="Mi link de reseñas"
+            subtitle={`Solo para calificarte a ti, ${barber.name}`}
+            url={reviewLink(barber.reviewCode)}
+            filename={`melo-qr-reseñas-${barber.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
+          />
+          <QrShareCard
+            title="Reservas de la barbería"
+            subtitle="El cliente escanea y elige su cita (puede elegirte a ti)."
+            url={bookingLink()}
+            filename="melo-qr-reservas"
+          />
+        </div>
+
+        {/* mis reseñas */}
+        <div className="mt-4 rounded-3xl border border-ink/10 bg-ivory p-5 shadow-sm">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="font-display text-base font-bold">Mis reseñas</div>
+            <Chip className="border-brass/40 text-brass-dark">
+              <Star className="h-3.5 w-3.5 fill-brass" /> {avg || "—"} / 5 · {reviews.length}
+            </Chip>
+          </div>
+          {reviews.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-ink/15 px-4 py-6 text-center text-sm text-ink-soft">
+              Aún no tienes reseñas. Muestra tu QR al final de cada corte y aquí las verás llegar.
+            </div>
+          ) : (
+            <div className="max-h-72 space-y-2 overflow-y-auto nice-scroll pr-1">
+              {reviews.slice().reverse().map((c) => (
+                <div key={c.id} className="rounded-xl border border-ink/10 bg-cream px-3 py-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-semibold">{c.authorName}</span>
+                    <span className="flex items-center gap-0.5">
+                      {Array.from({ length: 5 }, (_, i) => (
+                        <Star key={i} className={cn("h-3.5 w-3.5", i < (c.rating ?? 0) ? "fill-brass text-brass" : "text-ink/20")} />
+                      ))}
+                    </span>
+                  </div>
+                  {c.text ? <div className="mt-1 text-xs text-ink-soft">{c.text}</div> : null}
+                  <div className="mt-1 text-[10px] text-ink/40">{fmtDateMedium(new Date(c.createdAt))}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
