@@ -130,8 +130,29 @@ export function mergeStates(local: MergeSide, remote: MergeSide) {
   }
   db.availability = local.__wins ? { ...remote.db.availability, ...local.db.availability } : remote.db.availability;
   db.barberServices = mergeBarberServices(local.db.barberServices, remote.db.barberServices);
+  // días cerrados: unión con desempate por quién escribió más reciente (el que
+  // tiene cambio local gana su versión; los cierres remotos nunca se pierden)
+  db.blockedDates = mergeBlockedDates(local.db.blockedDates ?? {}, remote.db.blockedDates ?? {}, local.__wins);
   const admin = latestAdmin(local.admin, remote.admin);
   return { db, admin };
+}
+
+/**
+ * Mezcla dos mapas de días cerrados. Claves presentes en ambos: gana el lado
+ * con la escritura más reciente (local si __wins). Claves en un solo lado: se
+ * conservan siempre (cerrar un día en un dispositivo nunca se pierde por
+ * sincronizar; abrirlo tampoco).
+ */
+function mergeBlockedDates(
+  local: Record<string, string>,
+  remote: Record<string, string>,
+  localWins: boolean,
+): Record<string, string> {
+  const out: Record<string, string> = { ...remote };
+  for (const [k, v] of Object.entries(local)) {
+    if (!(k in remote) || localWins) out[k] = v;
+  }
+  return out;
 }
 
 // ============================ ciclo pull / push ============================
@@ -171,7 +192,8 @@ async function pull(): Promise<boolean> {
     (JSON.stringify(localDb.barbers) !== JSON.stringify(lastPulledDb.barbers) ||
       JSON.stringify(localDb.services) !== JSON.stringify(lastPulledDb.services) ||
       JSON.stringify(localDb.availability) !== JSON.stringify(lastPulledDb.availability) ||
-      JSON.stringify(localDb.barberServices) !== JSON.stringify(lastPulledDb.barberServices));
+      JSON.stringify(localDb.barberServices) !== JSON.stringify(lastPulledDb.barberServices) ||
+      JSON.stringify(localDb.blockedDates ?? {}) !== JSON.stringify(lastPulledDb.blockedDates ?? {}));
   const adminChangedLocally =
     !!lastPulledAdmin && JSON.stringify(localAdmin) !== JSON.stringify(lastPulledAdmin);
   const localWinsCatalog = dirty || dbChangedLocally; // hay edición local no publicada aún
