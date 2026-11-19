@@ -525,12 +525,32 @@ function writeJSON(key: string, value: unknown): boolean {
   try {
     localStorage.setItem(key, JSON.stringify(value));
     window.dispatchEvent(new CustomEvent("melo:db-changed", { detail: key }));
+    // sincronización multi-dispositivo: programar subida al servidor compartido
+    if (typeof window !== "undefined" && !key.includes("session") && !key.includes("deviceId")) {
+      try {
+        const { notifyLocalChange } = require("@/lib/sync") as typeof import("@/lib/sync");
+        notifyLocalChange();
+      } catch {
+        /* sync no disponible (build estático): ignorar */
+      }
+    }
     return true;
   } catch (e) {
     // localStorage lleno o bloqueado: avisar a la app para NO decir "guardado" en falso
     console.error("[melo] no se pudo guardar", key, e);
     window.dispatchEvent(new CustomEvent("melo:save-failed", { detail: { key } }));
     return false;
+  }
+}
+
+/** Persistir sin avisar a la sincronización: para materializar semillas o
+ *  re-escribir lo que ya estaba (NO es un cambio del usuario, no debe subirse). */
+function writeJSONQuiet(key: string, value: unknown) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* silencioso por diseño */
   }
 }
 
@@ -550,6 +570,11 @@ if (typeof window !== "undefined") {
     if (e.key === DB_KEY) memDb = null;
     if (e.key === ADMIN_KEY) memAdmin = null;
   });
+  // llegó estado nuevo desde el servidor de sincronización (otro dispositivo)
+  window.addEventListener("melo:invalidate-cache", () => {
+    memDb = null;
+    memAdmin = null;
+  });
 }
 
 export function getDB(): DB {
@@ -559,7 +584,7 @@ export function getDB(): DB {
       // primera visita o datos del esquema viejo: semilla limpia (+ migración del historial si había)
       const base = seedDB();
       memDb = stored && Array.isArray(stored.barbers) ? migrateDB(stored) : base;
-      writeJSON(DB_KEY, memDb); // persistir de inmediato
+      writeJSONQuiet(DB_KEY, memDb); // persistir de inmediato (sin eco de sincronización)
     } else {
       memDb = stored;
     }
@@ -592,7 +617,7 @@ export function getAdminData(): AdminData {
       };
     };
     memAdmin = fallback();
-    writeJSON(ADMIN_KEY, memAdmin);
+    writeJSONQuiet(ADMIN_KEY, memAdmin); // semilla/migración: no dispara sincronización
   }
   return memAdmin;
 }

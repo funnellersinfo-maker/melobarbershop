@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { getSession, logout, type SessionUser } from "@/lib/store";
 import { setupNotificationPersistence, ensureServiceWorker } from "@/lib/notify-client";
+import { startSync } from "@/lib/sync";
 import { PublicView } from "@/components/melo/PublicView";
 import { LoginView } from "@/components/melo/LoginView";
 import { AppShell, type ViewId } from "@/components/melo/AppShell";
@@ -32,6 +33,10 @@ export default function Page() {
     setUser(s);
     if (s && s.role === "BARBER") setView("dashboard");
     setChecking(false);
+
+    // sincronización multi-dispositivo: computador, celular y visitantes ven
+    // siempre el mismo estado (bajar cambios cada 4s + subir al guardar)
+    void startSync();
 
     // notificaciones push persistentes + service worker
     void ensureServiceWorker();

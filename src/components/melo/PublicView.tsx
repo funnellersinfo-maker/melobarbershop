@@ -79,9 +79,10 @@ function BookingWizard({ onLogin }: { onLogin: () => void }) {
     }
   }, [serviceId, service]);
 
-  // Si la hora elegida dejó de ser válida tras un cambio en vivo (duración, intervalo, horarios), se re-selecciona
+  // Si la hora elegida dejó de ser válida tras un cambio en vivo (duración, intervalo, horarios), se re-selecciona.
+  // Nunca después de confirmar (sent): la propia reserva bloquea esa hora y el usuario debe ver el paso 5.
   useEffect(() => {
-    if (step >= 4 && time && !slots.some((s) => s.time === time)) {
+    if (!sent && step >= 4 && time && !slots.some((s) => s.time === time)) {
       setTime(null);
       setStep(3);
     }
